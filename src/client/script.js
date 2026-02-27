@@ -167,6 +167,7 @@ createApp({
 					const info = await this.backend.info();
 					this.info.boardName = HackRF.BOARD_ID_NAME.get(info.boardId);
 					this.showMsg("Connected to " + this.info.boardName);
+					await this.startStream();
 				} else {
 					this.showMsg("Failed to open device.");
 				}

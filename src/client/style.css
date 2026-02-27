@@ -162,6 +162,12 @@ body {
 	cursor: not-allowed;
 }
 
+.top-controls {
+	display: flex;
+	align-items: center;
+	gap: 4px;
+}
+
 .main-layout {
 	display: flex;
 	flex: 1;
