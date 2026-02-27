@@ -61,9 +61,8 @@ impl FFT {
 
         // Pre-apply scaling factors to window function
         // 1/128: normalize i8 (-128..127) to -1..1
-        // 1/n: FFT normalization
         // (-1)^i: pre-FFT DC centering (equivalent to fftShift, matches SDR++ iq_frontend.cpp)
-        let scale = 1.0 / (128.0 * n as f32);
+        let scale = 1.0 / 128.0;
         let scaled_window = window_.iter().enumerate().map(|(i, &w)| {
             let shift = if i % 2 == 0 { 1.0f32 } else { -1.0f32 };
             w * scale * shift
@@ -144,9 +143,9 @@ impl FFT {
         let inv_alpha = 1.0 - alpha;
 
         for i in 0..self.n {
-            // Power spectrum (matches SDR++ volk_32fc_s32f_power_spectrum_32f)
-            // Already scaled by 1/(128*n) via scaled_window
-            let power = buffer[i].norm_sqr();
+            // Power spectrum calculating exactly as `volk_32fc_s32f_power_spectrum_32f`
+            // with `_fftSize` passed as the `normalization_factor` like in SDR++
+            let power = buffer[i].norm_sqr() / (self.n as f32);
             let db = power.max(1e-20).log10() * 10.0;
 
             // EMA smoothing in dB domain (matches SDR++ waterfall.cpp pushFFT)

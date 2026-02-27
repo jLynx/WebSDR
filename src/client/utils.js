@@ -28,6 +28,8 @@ const DEFAULT_COLOR_MAP = [
 	[0xFF, 0xFF, 0xFF],
 	[0xFF, 0xFF, 0x00],
 	[0xFE, 0x6D, 0x16],
+	[0xFE, 0x6D, 0x16],
+	[0xFF, 0x00, 0x00],
 	[0xFF, 0x00, 0x00],
 	[0xC6, 0x00, 0x00],
 	[0x9F, 0x00, 0x00],
@@ -41,14 +43,17 @@ export function convertDecibelToRGB(dB, minDB = -70, maxDB = 0) {
 	p = Math.max(0.0, Math.min(1.0, p));
 
 	const colorCount = DEFAULT_COLOR_MAP.length;
-	const indexFloat = p * (colorCount - 1);
-	const indexBase = Math.floor(indexFloat);
-	const indexNext = Math.min(colorCount - 1, indexBase + 1);
-	const weightNext = indexFloat - indexBase;
-	const weightBase = 1.0 - weightNext;
+	let lowerId = Math.floor(p * colorCount);
+	let upperId = Math.ceil(p * colorCount);
+	lowerId = Math.max(0, Math.min(colorCount - 1, lowerId));
+	upperId = Math.max(0, Math.min(colorCount - 1, upperId));
 
-	const c1 = DEFAULT_COLOR_MAP[indexBase];
-	const c2 = DEFAULT_COLOR_MAP[indexNext];
+	const ratio = (p * colorCount) - lowerId;
+	const weightBase = 1.0 - ratio;
+	const weightNext = ratio;
+
+	const c1 = DEFAULT_COLOR_MAP[lowerId];
+	const c2 = DEFAULT_COLOR_MAP[upperId];
 
 	const r = Math.round(c1[0] * weightBase + c2[0] * weightNext);
 	const g = Math.round(c1[1] * weightBase + c2[1] * weightNext);
@@ -213,12 +218,8 @@ export class WaterfallGL {
 		// texture sources
 		this.textures = [gl.createTexture(), gl.createTexture()];
 
-		// Initialize texture rounded up to the nearest power of two
-		// (Workaround for older WebGL constraints; ensures compatibility with non-NPOT environments)
-		this.canvas.width = Math.pow(2, Math.ceil(Math.log2(this.bandSize)));
-		console.log({ glInit: this.canvas.width });
+		this.canvas.width = this.bandSize;
 		this.canvas.height = this.historySize;
-		console.log(this.canvas.width, this.bandSize);
 
 		for (var i = 0, it; (it = this.textures[i]); i++) {
 			gl.bindTexture(gl.TEXTURE_2D, it);
@@ -227,6 +228,8 @@ export class WaterfallGL {
 			gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, this.canvas);
 			gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
 			gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+			gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+			gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
 			gl.bindTexture(gl.TEXTURE_2D, null);
 		}
 

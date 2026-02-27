@@ -113,11 +113,13 @@ class Worker {
 
 		// ── Spectrum FFT setup ────────────────────────────────────────
 		const spectrumWindowFunc = (x) => {
-			const alpha = 0.16;
-			const a0 = (1.0 - alpha) / 2.0;
-			const a1 = 1.0 / 2.0;
-			const a2 = alpha / 2.0;
-			return a0 - a1 * Math.cos(2 * Math.PI * x) + a2 * Math.cos(4 * Math.PI * x);
+			const n = x * fftSize;
+			const N = fftSize;
+			const a0 = 0.355768;
+			const a1 = 0.487396;
+			const a2 = 0.144232;
+			const a3 = 0.012604;
+			return a0 - a1 * Math.cos(2.0 * Math.PI * n / N) + a2 * Math.cos(4.0 * Math.PI * n / N) - a3 * Math.cos(6.0 * Math.PI * n / N);
 		};
 		const spectrumWindow = new Float32Array(fftSize);
 		for (let i = 0; i < fftSize; i++) {
@@ -130,6 +132,9 @@ class Worker {
 		const iqBuffer = new Int8Array(fftSize * 2);
 		let iqBufferPos = 0;
 		let spectrumThrottle = 0;
+		const targetFftFps = 20;
+		const possibleFftFps = sampleRate / fftSize;
+		const fftSkipFrames = Math.max(1, Math.round(possibleFftFps / targetFftFps));
 
 		// ── FIR Filter Math (SDR++ dsp/taps & dsp/window) ──────────────
 		const sinc = (x) => (x === 0.0) ? 1.0 : (Math.sin(x) / x);
@@ -328,7 +333,7 @@ class Worker {
 		const initialBandwidth = 150000;
 
 		// Free any existing DDCs
-		if (this.ddcs) this.ddcs.forEach(d => { try { d.free(); } catch(_){} });
+		if (this.ddcs) this.ddcs.forEach(d => { try { d.free(); } catch (_) { } });
 
 		// Initialize dynamic VFO arrays (start with one VFO)
 		const defaultVfoParams = { freq: centerFreq, mode: 'wfm', enabled: false, deEmphasis: '50us', squelchEnabled: false, squelchLevel: -100.0, lowPass: true, highPass: false, bandwidth: initialBandwidth, volume: 50 };
@@ -672,8 +677,7 @@ class Worker {
 				if (iqBufferPos >= iqBuffer.length) {
 					iqBufferPos = 0;
 					spectrumThrottle++;
-					// ~30 fps update
-					if (spectrumThrottle % 15 === 0) {
+					if (spectrumThrottle % fftSkipFrames === 0) {
 						spectrumFft.fft(iqBuffer, spectrumOutput);
 						spectrumCallback(new Float32Array(spectrumOutput));
 					}
@@ -765,7 +769,7 @@ class Worker {
 	removeVfo(index) {
 		if (!this.vfoParams || index < 0 || index >= this.vfoParams.length) return;
 		if (this.vfoParams.length <= 1) return; // Keep at least one VFO
-		try { this.ddcs[index].free(); } catch(_) {}
+		try { this.ddcs[index].free(); } catch (_) { }
 		this.vfoParams.splice(index, 1);
 		this.ddcs.splice(index, 1);
 		this.vfoStates.splice(index, 1);

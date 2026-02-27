@@ -33,14 +33,14 @@ const makeDefaultVfo = (freq = 100.0) => ({
 
 // SDR++ mode defaults
 const MODE_DEFAULTS = {
-	wfm:  { bandwidth: 150000, snapInterval: 100000, deEmphasis: '50us', lowPass: true },
-	nfm:  { bandwidth: 12500,  snapInterval: 2500,   deEmphasis: 'none', lowPass: true },
-	am:   { bandwidth: 10000,  snapInterval: 1000,   deEmphasis: 'none', lowPass: false },
-	usb:  { bandwidth: 2800,   snapInterval: 100,    deEmphasis: 'none', lowPass: false },
-	lsb:  { bandwidth: 2800,   snapInterval: 100,    deEmphasis: 'none', lowPass: false },
-	dsb:  { bandwidth: 4600,   snapInterval: 100,    deEmphasis: 'none', lowPass: false },
-	cw:   { bandwidth: 200,    snapInterval: 10,     deEmphasis: 'none', lowPass: false },
-	raw:  { bandwidth: 48000,  snapInterval: 2500,   deEmphasis: 'none', lowPass: false },
+	wfm: { bandwidth: 150000, snapInterval: 100000, deEmphasis: '50us', lowPass: true },
+	nfm: { bandwidth: 12500, snapInterval: 2500, deEmphasis: 'none', lowPass: true },
+	am: { bandwidth: 10000, snapInterval: 1000, deEmphasis: 'none', lowPass: false },
+	usb: { bandwidth: 2800, snapInterval: 100, deEmphasis: 'none', lowPass: false },
+	lsb: { bandwidth: 2800, snapInterval: 100, deEmphasis: 'none', lowPass: false },
+	dsb: { bandwidth: 4600, snapInterval: 100, deEmphasis: 'none', lowPass: false },
+	cw: { bandwidth: 200, snapInterval: 10, deEmphasis: 'none', lowPass: false },
+	raw: { bandwidth: 48000, snapInterval: 2500, deEmphasis: 'none', lowPass: false },
 };
 
 createApp({
@@ -53,7 +53,7 @@ createApp({
 			radio: {
 				centerFreq: 100.0,
 				sampleRate: 8000000,
-				fftSize: 2048,
+				fftSize: 65536,
 			},
 			display: {
 				minDB: -70.0,
@@ -251,24 +251,42 @@ createApp({
 			const { fftSize } = this.radio;
 			const { waterfall, fft } = this.$refs;
 
-			const nx = Math.pow(2, Math.ceil(Math.log2(fftSize)));
+			const renderSize = Math.min(fftSize, 8192);
+			this.renderSize = renderSize;
+			const nx = Math.pow(2, Math.ceil(Math.log2(renderSize)));
 			const useWebGL = nx <= 16384;
 			this.waterfallEngine = useWebGL ?
-				new WaterfallGL(waterfall, fftSize, 512) :
-				new Waterfall(waterfall, fftSize, 512);
+				new WaterfallGL(waterfall, renderSize, 512) :
+				new Waterfall(waterfall, renderSize, 512);
 
 			this.waterfallEngine.setRange(this.display.minDB, this.display.maxDB);
 
 			const rect = this.$refs.fftContainer.getBoundingClientRect();
-			fft.width = fftSize;
+			fft.width = rect.width; // Draw spectrum based on physical pixels, not full FFT
 			fft.height = rect.height;
 			this.fftCtx = fft.getContext('2d');
 		},
 		drawSpectrum(data) {
 			if (!this.running || !this.fftCtx) return;
 
+			// Downsample for waterfall history
+			let wfData = data;
+			if (data.length > this.renderSize) {
+				wfData = new Float32Array(this.renderSize);
+				const factor = data.length / this.renderSize;
+				for (let i = 0; i < this.renderSize; i++) {
+					let maxVal = -1000;
+					const start = Math.floor(i * factor);
+					const end = Math.floor((i + 1) * factor);
+					for (let j = start; j < end; j++) {
+						if (data[j] > maxVal) maxVal = data[j];
+					}
+					wfData[i] = maxVal;
+				}
+			}
+
 			// Waterfall drawing
-			this.waterfallEngine.renderLine(data);
+			this.waterfallEngine.renderLine(wfData);
 
 			const ctx = this.fftCtx;
 			const w = ctx.canvas.width;
@@ -291,23 +309,31 @@ createApp({
 			ctx.save();
 			ctx.beginPath();
 
-			const pointsToDraw = data.length / this.view.zoomScale;
+			const pointsToDraw = Math.floor(data.length / this.view.zoomScale);
 			const startIdx = Math.floor(data.length * this.view.zoomOffset);
 			const dbRange = this.display.maxDB - this.display.minDB;
 
-			for (let i = 0; i < pointsToDraw; i++) {
-				const dataIdx = startIdx + i;
-				if (dataIdx >= data.length) break;
+			// Decimate points so we don't draw 65k lines
+			const drawPoints = Math.min(w, pointsToDraw);
+			const factor = pointsToDraw / drawPoints;
 
-				// Map current dB into our viewport max/min
-				let valDB = data[dataIdx];
+			for (let i = 0; i < drawPoints; i++) {
+				const start = startIdx + Math.floor(i * factor);
+				const end = startIdx + Math.floor((i + 1) * factor);
+
+				let valDB = -1000;
+				for (let j = start; j < end; j++) {
+					if (j >= data.length) break;
+					if (data[j] > valDB) valDB = data[j];
+				}
+
 				valDB = Math.max(this.display.minDB, Math.min(this.display.maxDB, valDB));
 
 				// 0 is bottom (minDB), 1 is top (maxDB)
 				const n = (valDB - this.display.minDB) / dbRange;
 				let y = h - (h * n);
 
-				const x = (i / pointsToDraw) * w;
+				const x = (i / drawPoints) * w;
 
 				if (i === 0) {
 					ctx.moveTo(x, y);
