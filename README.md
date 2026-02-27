@@ -1,4 +1,4 @@
-# HackRF Sweep WebUSB
+# Web SDR
 
 A browser-based spectrum analyzer for [HackRF](https://greatscottgadgets.com/hackrf/), built with WebUSB, WebAssembly (Rust), and WebGL.
 
