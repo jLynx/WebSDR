@@ -1,0 +1,25 @@
+# cargo make build
+[tasks.build]
+command = "wasm-pack"
+args = ["build", "--target", "web", "--out-dir", "pkg"]
+
+[tasks.build-node]
+command = "wasm-pack"
+args = ["build", "--target", "nodejs", "--out-dir", "node"]
+
+[tasks.test-wasm]
+command = "wasm-pack"
+args = ["test", "--node"]
+
+[tasks.test-cargo]
+command = "cargo"
+args = ["test"]
+
+[tasks.test-js]
+dependencies = ["build-node"]
+command = "node"
+args = ["test-js-binding.mjs"]
+
+[tasks.test]
+clear = true
+dependencies = ["test-cargo", "test-wasm", "test-js"]

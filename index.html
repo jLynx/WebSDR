@@ -1,0 +1,241 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+	<meta charset="utf-8" />
+	<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+	<title>SDR WebViewer (HackRF)</title>
+	<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600&family=Roboto+Mono&display=swap" rel="stylesheet">
+	<link rel="stylesheet" href="style.css">
+	<script src="script.js" type="module"></script>
+</head>
+<body>
+	<div id="app" v-cloak>
+		<!-- Top Bar -->
+		<div class="top-bar">
+			<div class="brand">SDR WebViewer</div>
+			<div class="vfo-display">
+				<input class="vfo-freq-input" type="text" v-model="vfoDisplayFreq" @blur="applyVfoFreq" @keyup.enter="applyVfoFreq" @focus="focusVfoFreq">
+				<div class="vfo-unit">MHz</div>
+			</div>
+			<div class="top-controls">
+				<button class="icon-btn" @click="togglePlay" :class="{ active: running }" :disabled="!connected">
+					<svg v-if="!running" viewBox="0 0 24 24" width="24" height="24"><path fill="currentColor" d="M8 5v14l11-7z"/></svg>
+					<svg v-else viewBox="0 0 24 24" width="24" height="24"><path fill="currentColor" d="M6 19h4V5H6v14zm8-14v14h4V5h-4z"/></svg>
+				</button>
+				<button class="icon-btn" @click="showStats = !showStats" :class="{ active: showStats }" title="DSP Stats">
+					<svg viewBox="0 0 24 24" width="24" height="24"><path fill="currentColor" d="M19 3H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zM9 17H7v-7h2v7zm4 0h-2V7h2v10zm4 0h-2v-4h2v4z"/></svg>
+				</button>
+			</div>
+		</div>
+
+		<div class="main-layout">
+			<!-- Sidebar -->
+			<div class="sidebar">
+				<div class="panel">
+					<div class="panel-header">Source</div>
+					<div class="panel-body">
+						<div class="form-row">
+							<button class="btn btn-primary" v-if="!connected" @click="connect">Connect Device</button>
+							<button class="btn" v-else @click="disconnect">Disconnect</button>
+						</div>
+						<div class="form-row info-row" v-if="connected">
+							<small>{{ info.boardName }}</small>
+						</div>
+					</div>
+				</div>
+
+				<div class="panel" :class="{ disabled: !connected }">
+					<div class="panel-header">Radio</div>
+					<div class="panel-body">
+						<div class="form-row">
+							<label>Center</label>
+							<div class="input-group">
+								<input type="number" v-model.number="radio.centerFreq" step="0.1" title="Center Frequency (MHz)">
+								<span>MHz</span>
+							</div>
+						</div>
+						<div class="form-row">
+							<label>Sample Rate</label>
+							<select v-model.number="radio.sampleRate">
+								<option value="2000000">2 MSPS</option>
+								<option value="4000000">4 MSPS</option>
+								<option value="8000000">8 MSPS</option>
+								<option value="10000000">10 MSPS</option>
+								<option value="16000000">16 MSPS</option>
+								<option value="20000000">20 MSPS</option>
+							</select>
+						</div>
+						<div class="form-row">
+							<label>LNA Gain</label>
+							<div class="slider-group">
+								<input type="range" v-model.number="gains.lna" min="0" max="40" step="8">
+								<span class="val">{{ gains.lna }}dB</span>
+							</div>
+						</div>
+						<div class="form-row">
+							<label>VGA Gain</label>
+							<div class="slider-group">
+								<input type="range" v-model.number="gains.vga" min="0" max="62" step="2">
+								<span class="val">{{ gains.vga }}dB</span>
+							</div>
+						</div>
+						<div class="form-row">
+							<label class="checkbox">
+								<input type="checkbox" v-model="gains.ampEnabled"> Amp (14dB)
+							</label>
+						</div>
+					</div>
+				</div>
+
+				<div class="panel" :class="{ disabled: !connected }">
+					<div class="panel-header" style="display: flex; justify-content: space-between; align-items: center;">
+						<div>Radio</div>
+						<label class="custom-checkbox header-checkbox">
+							<input type="checkbox" v-model="audio.enabled" @change="toggleAudioCheckbox" :disabled="!running">
+							<span class="checkmark"></span>
+						</label>
+					</div>
+					<div class="panel-body panel-condensed">
+						<div class="mode-grid">
+							<label class="mode-radio"><input type="radio" value="nfm" v-model="audio.mode"><span class="mode-btn">NFM</span></label>
+							<label class="mode-radio"><input type="radio" value="am" v-model="audio.mode"><span class="mode-btn">AM</span></label>
+							<label class="mode-radio"><input type="radio" value="usb" v-model="audio.mode"><span class="mode-btn">USB</span></label>
+							<label class="mode-radio"><input type="radio" value="lsb" v-model="audio.mode"><span class="mode-btn">LSB</span></label>
+							<label class="mode-radio"><input type="radio" value="wfm" v-model="audio.mode"><span class="mode-btn">WFM</span></label>
+							<label class="mode-radio"><input type="radio" value="dsb" v-model="audio.mode"><span class="mode-btn">DSB</span></label>
+							<label class="mode-radio"><input type="radio" value="cw" v-model="audio.mode"><span class="mode-btn">CW</span></label>
+							<label class="mode-radio"><input type="radio" value="raw" v-model="audio.mode"><span class="mode-btn">RAW</span></label>
+						</div>
+						
+						<div class="form-row">
+							<label style="flex: 0 0 90px;">Bandwidth</label>
+							<div class="spin-group">
+								<input type="number" v-model.number="audio.bandwidth" step="1000" :disabled="audio.mode === 'raw'">
+								<button @click="audio.bandwidth -= 1000" :disabled="audio.mode === 'raw'">-</button>
+								<button @click="audio.bandwidth += 1000" :disabled="audio.mode === 'raw'">+</button>
+							</div>
+						</div>
+						
+						<div class="form-row">
+							<label style="flex: 0 0 90px;">Snap Interval</label>
+							<div class="spin-group">
+								<input type="number" v-model.number="audio.snapInterval" step="1000">
+								<button @click="audio.snapInterval -= 1000">-</button>
+								<button @click="audio.snapInterval += 1000">+</button>
+							</div>
+						</div>
+
+						<!-- De-emphasis: only shown for NFM and WFM (SDR++ deempAllowed) -->
+						<div class="form-row" v-if="audio.mode === 'wfm' || audio.mode === 'nfm'">
+							<label style="flex: 0 0 90px;">De-emphasis</label>
+							<select v-model="audio.deEmphasis" style="width: 130px; margin-left: auto;">
+								<option value="none">None</option>
+								<option value="22us">22us</option>
+								<option value="50us">50us</option>
+								<option value="75us">75us</option>
+							</select>
+						</div>
+
+						<div class="form-row squelch-row">
+							<label class="custom-checkbox">
+								<input type="checkbox" v-model="audio.squelchEnabled">
+								<span class="checkmark"></span>
+								Squelch
+							</label>
+							<div class="slider-group compact-slider" style="margin-left: 8px;">
+								<input type="range" v-model.number="audio.squelchLevel" min="-100" max="0" step="0.1" :disabled="!audio.squelchEnabled">
+								<span class="val">{{ audio.squelchLevel.toFixed(3) }}dB</span>
+							</div>
+						</div>
+
+						<!-- IF Noise Reduction: only for NFM and WFM (SDR++ FMIFNRAllowed) -->
+						<div class="form-row full-checkbox-row" v-if="audio.mode === 'nfm' || audio.mode === 'wfm'">
+							<label class="custom-checkbox">
+								<input type="checkbox" v-model="audio.noiseReduction">
+								<span class="checkmark"></span>
+								IF Noise Reduction
+							</label>
+						</div>
+
+						<!-- Stereo: only for WFM (SDR++ broadcast_fm.h stereo) -->
+						<div class="form-row full-checkbox-row" v-if="audio.mode === 'wfm'">
+							<label class="custom-checkbox">
+								<input type="checkbox" v-model="audio.stereo">
+								<span class="checkmark"></span>
+								Stereo
+							</label>
+						</div>
+
+						<!-- Low Pass: only for NFM and WFM (SDR++ fm.h / broadcast_fm.h) -->
+						<div class="form-row full-checkbox-row" v-if="audio.mode === 'nfm' || audio.mode === 'wfm'">
+							<label class="custom-checkbox">
+								<input type="checkbox" v-model="audio.lowPass">
+								<span class="checkmark"></span>
+								Low Pass
+							</label>
+						</div>
+
+						<!-- Decode RDS: only for WFM (SDR++ wfm.h) -->
+						<div class="form-row full-checkbox-row" v-if="audio.mode === 'wfm'">
+							<label class="custom-checkbox">
+								<input type="checkbox" v-model="audio.rds">
+								<span class="checkmark"></span>
+								Decode RDS
+							</label>
+						</div>
+
+						<!-- Advanced RDS Info / Region: only for WFM when RDS enabled -->
+						<div class="form-row" v-if="audio.mode === 'wfm' && audio.rds" style="align-items: center;">
+							<label style="flex: 0 0 120px; opacity: 0.7;">Advanced RDS Info</label>
+							<select v-model="audio.rdsRegion" style="width: 130px; margin-left: auto;">
+								<option value="eu">Europe</option>
+								<option value="na">North America</option>
+							</select>
+						</div>
+						
+						<!-- Keeping Volume for now, since it wasn't explicitly said to be removed, but placing at bottom -->
+						<div class="form-row">
+							<label>Volume</label>
+							<div class="slider-group">
+								<input type="range" v-model.number="audio.volume" min="0" max="100" step="1">
+								<span class="val">{{ audio.volume }}%</span>
+							</div>
+						</div>
+					</div>
+				</div>
+			</div>
+
+			<!-- Canvas Area -->
+			<div class="workspace">
+				<div class="fft-container" ref="fftContainer">
+					<canvas id="fft" ref="fft"></canvas>
+					<!-- Canvas Overlay lines -->
+					<div class="freq-axis">
+						<div class="tick" style="left: 0%">{{ labelFreq(0) }}</div>
+						<div class="tick" style="left: 25%">{{ labelFreq(0.25) }}</div>
+						<div class="tick" style="left: 50%">{{ labelFreq(0.5) }}</div>
+						<div class="tick" style="left: 75%">{{ labelFreq(0.75) }}</div>
+						<div class="tick" style="right: 0px">{{ labelFreq(1) }}</div>
+					</div>
+					<div class="hover-tick" ref="hoverTick" style="display: none">{{ hoverFreqText }}</div>
+					<!-- DSP Performance Stats Overlay -->
+					<div v-if="showStats && dspStats" class="dsp-stats-overlay">
+						<div><b>DSP Stats</b></div>
+						<div>USB: {{ dspStats.usbFps }} cb/s | Chunk: {{ dspStats.chunkSize }} B</div>
+						<div>DSP: {{ dspStats.dspAvgMs }}ms avg / {{ dspStats.dspMaxMs }}ms max</div>
+						<div>Audio: {{ dspStats.audioFps }} calls/s | {{ dspStats.audioRate }} samp/s</div>
+						<div>Msgs: {{ dspStats.msgRate }} /s | Input: {{ (dspStats.inputRate/1e6).toFixed(2) }} MSa/s</div>
+						<div>Dropped: {{ dspStats.dropped }}</div>
+					</div>
+				</div>
+				<div class="waterfall-container">
+					<canvas id="waterfall" ref="waterfall"></canvas>
+				</div>
+			</div>
+		</div>
+
+		<!-- Dialogs -->
+		<div class="snackbar" :class="{ show: snackbar.show }">{{ snackbar.message }}</div>
+	</div>
+</body>
+</html>
