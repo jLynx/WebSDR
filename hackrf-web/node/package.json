@@ -1,0 +1,14 @@
+{
+  "name": "hackrf-web",
+  "collaborators": [
+    "jLynx"
+  ],
+  "version": "0.1.0",
+  "files": [
+    "hackrf_web_bg.wasm",
+    "hackrf_web.js",
+    "hackrf_web.d.ts"
+  ],
+  "main": "hackrf_web.js",
+  "types": "hackrf_web.d.ts"
+}

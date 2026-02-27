@@ -1,12 +1,24 @@
-# Web SDR
+# WebSDR
 
-A browser-based spectrum analyzer for [HackRF](https://greatscottgadgets.com/hackrf/), built with WebUSB, WebAssembly (Rust), and WebGL.
+A browser-based Software Defined Radio (SDR) receiver for [HackRF](https://greatscottgadgets.com/hackrf/). Connect a HackRF device directly to your browser via WebUSB and tune into FM, AM, SSB, CW, and more — no drivers or native software required.
+
+### Features
+
+- **Multi-VFO** — tune multiple frequencies simultaneously with independent demodulation  
+- **Demodulation modes** — WFM, NFM, AM, USB, LSB, DSB, CW, and raw IQ  
+- **Real-time waterfall & spectrum** — WebGL-rendered FFT display  
+- **RDS decoding** — station name, programme type, and radiotext on WFM  
+- **Squelch, noise reduction, de-emphasis, stereo** — full DSP controls per VFO  
+- **WebAssembly DSP** — FFT and signal processing in Rust compiled to WASM for near-native performance  
+- **Deployed on Cloudflare Workers** — static assets served at the edge  
 
 ## How It Works
 
 1. **WebUSB** — communicates directly with the HackRF device from the browser.
-2. **WebAssembly** — runs FFT in Rust (via [RustFFT](https://github.com/awelkie/RustFFT)), compiled to WASM for near-native performance.
-3. **WebGL** — renders a real-time waterfall display.
+2. **WebAssembly** — runs DSP (FFT, filtering, demodulation) in Rust via [RustFFT](https://github.com/awelkie/RustFFT), compiled to WASM.
+3. **Web Workers** — all DSP runs off the main thread for smooth UI.
+4. **WebGL** — renders the real-time waterfall display.
+5. **Vue 3** — reactive UI with per-VFO controls.
 
 ---
 
@@ -14,106 +26,81 @@ A browser-based spectrum analyzer for [HackRF](https://greatscottgadgets.com/hac
 
 | Tool | Purpose | Install |
 |------|---------|---------|
+| [Node.js](https://nodejs.org/) | Build & dev server | Download from website |
 | [Rust](https://rustup.rs/) | Compile WASM module | `curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \| sh` |
-| `wasm32-unknown-unknown` target | Rust → WASM compilation | `rustup target add wasm32-unknown-unknown` |
+| `wasm32-unknown-unknown` target | Rust → WASM | `rustup target add wasm32-unknown-unknown` |
 | [wasm-pack](https://rustwasm.github.io/wasm-pack/) | Build & package WASM | `cargo install wasm-pack` |
 | [cargo-make](https://github.com/sagiegurari/cargo-make) | Task runner for Rust builds | `cargo install --force cargo-make` |
-| [Node.js](https://nodejs.org/) (optional) | Install JS dependencies & run JS-binding tests | Download from website |
 | A WebUSB-capable browser | Run the app (e.g. Google Chrome) | — |
 
 ---
 
-## Building
-
-### 1. Build the WASM Module (Rust)
-
-From the **project root**:
+## Quick Start
 
 ```bash
-cargo make build
-```
-
-This runs `wasm-pack build --target web --out-dir pkg` inside the `hackrf-web/` directory, producing the WASM binary and JS glue code in `hackrf-web/pkg/`.
-
-You can also build directly from the `hackrf-web/` folder:
-
-```bash
-cd hackrf-web
-cargo make build
-```
-
-#### Build for Node.js (optional)
-
-If you need a Node.js-compatible build (e.g. for testing):
-
-```bash
-cd hackrf-web
-cargo make build-node
-```
-
-This outputs to `hackrf-web/node/`.
-
-### 2. Install JavaScript Dependencies
-
-```bash
+# Install dependencies
 npm install
+
+# Build the WASM module (first time / after Rust changes)
+cd hackrf-web && cargo make build && cd ..
+
+# Start local dev server
+npm run dev
 ```
 
-This installs [Vue 3](https://vuejs.org/) and [Comlink](https://github.com/GoogleChromeLabs/comlink) from `package.json`.
+Then open [http://localhost:8787](http://localhost:8787) in Google Chrome.
+
+---
+
+## Build Commands
+
+| Command | Description |
+|---------|-------------|
+| `npm run dev` | Build client assets and start local dev server (http://localhost:8787) |
+| `npm run build` | Build client assets into `dist/` |
+| `npm run deploy` | Build and deploy to Cloudflare Workers |
+| `npm run test` | Run tests with Vitest |
+
+### Building the WASM Module
+
+The Rust/WASM module must be built separately (requires Rust toolchain):
+
+```bash
+# From the project root
+cd hackrf-web
+cargo make build          # Build for web (output: hackrf-web/pkg/)
+cargo make build-node     # Build for Node.js (output: hackrf-web/node/)
+```
+
+> **Note:** The WASM build outputs in `hackrf-web/pkg/` are committed to the repo so that `npm run deploy` works without requiring Rust on the CI/deployment machine.
 
 ---
 
 ## Running
 
-### Serving Locally
-
-The app is a static site — serve the project root with any HTTP server. For example:
-
-```bash
-# Using Python
-python -m http.server 8080
-
-# Or using Node.js
-npx http-server . -p 8080
-```
-
-> **Note:** WebUSB requires a **secure context** (HTTPS or `localhost`). Serving from `localhost` works for development.
-
-Then open [http://localhost:8080](http://localhost:8080) in Google Chrome.
-
 ### Using the App
 
 1. Connect your HackRF to a USB port.
-2. Click **Connect Device** and select the HackRF from the browser prompt.
-3. Set the frequency range for analysis.
-4. Click the **Play** button to start sweeping.
-5. Adjust gains (LNA, VGA, AMP) as needed.
+2. Open the app and click **Connect Device**.
+3. Select the HackRF from the browser's USB device prompt.
+4. Set a center frequency and click **Play**.
+5. Click on the spectrum/waterfall to tune a VFO, or add multiple VFOs.
+6. Select a demodulation mode (WFM, NFM, AM, USB, etc.) per VFO.
+7. Adjust gains (LNA, VGA, AMP) as needed.
+
+> **Note:** WebUSB requires a **secure context** (HTTPS or `localhost`).
 
 ---
 
 ## Testing
 
-Run the full test suite (Rust unit tests, WASM tests, and JS binding tests) from the project root:
-
 ```bash
-cargo make test
-```
+# Worker tests (Vitest + Cloudflare Workers pool)
+npm run test
 
-This executes three test tasks inside `hackrf-web/`:
-
-| Task | Command | Description |
-|------|---------|-------------|
-| `test-cargo` | `cargo test` | Rust unit tests |
-| `test-wasm` | `wasm-pack test --node` | WASM-bindgen tests in Node.js |
-| `test-js` | `node test-js-binding.mjs` | JS binding integration tests (builds Node target first) |
-
-You can run them individually from `hackrf-web/`:
-
-```bash
+# Rust/WASM tests
 cd hackrf-web
-cargo make test-cargo
-cargo make test-wasm
-cargo make test-js
+cargo make test
 ```
 
 ---
@@ -122,21 +109,28 @@ cargo make test-js
 
 ```
 .
-├── index.html          # Main app entry point
-├── script.js           # Vue 3 application logic
-├── style.css           # UI styles
-├── hackrf.js           # WebUSB HackRF driver
-├── worker.js           # Web Worker for FFT processing
-├── utils.js            # Utility functions
-├── package.json        # JS dependencies (Vue, Comlink)
-├── Makefile.toml       # Root cargo-make tasks (delegates to hackrf-web/)
-└── hackrf-web/         # Rust WASM module
-    ├── Cargo.toml      # Rust dependencies (wasm-bindgen, rustfft)
-    ├── Makefile.toml   # WASM build & test tasks
-    ├── src/
-    │   └── lib.rs      # FFT implementation in Rust
-    ├── pkg/            # wasm-pack output (web target)
-    └── node/           # wasm-pack output (Node.js target)
+├── src/
+│   ├── index.js            # Cloudflare Worker entry (serves static assets)
+│   └── client/             # Frontend source (HTML, CSS, JS)
+│       ├── index.html      # Main app entry point
+│       ├── style.css       # UI styles
+│       ├── script.js       # Vue 3 application logic
+│       ├── hackrf.js       # WebUSB HackRF driver
+│       ├── worker.js       # Web Worker (DSP processing)
+│       ├── utils.js        # Waterfall renderers (Canvas/WebGL)
+│       └── sum_taps.js     # Filter tap utilities
+├── dist/                   # Build output (gitignored, generated by build.js)
+├── hackrf-web/             # Rust WASM module
+│   ├── Cargo.toml
+│   ├── Makefile.toml       # WASM build & test tasks
+│   ├── src/lib.rs          # DSP implementation in Rust
+│   ├── pkg/                # wasm-pack output (web target, committed)
+│   └── node/               # wasm-pack output (Node.js target, committed)
+├── test/                   # Tests
+├── build.js                # Assembles dist/ from src/client + vendors + WASM
+├── wrangler.jsonc          # Cloudflare Worker configuration
+├── package.json            # Dependencies & scripts
+└── COPYING                 # License
 ```
 
 ---

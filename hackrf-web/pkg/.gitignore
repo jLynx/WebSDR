@@ -1,0 +1,2 @@
+# Track all pkg build outputs so they're available for deployment
+# (wasm-pack generates this file with `*` but we need these committed)
