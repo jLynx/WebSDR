@@ -58,6 +58,9 @@ async function loadModel(model) {
 	}
 }
 
+// Common Whisper hallucinations on silence / noise
+const HALLUCINATION_RE = /^\s*(you|a)\s*[.!?,]*\s*$/i;
+
 async function transcribe(audio, id) {
 	if (!pipeline) {
 		self.postMessage({ type: 'error', message: 'Model not loaded yet.' });
@@ -77,6 +80,12 @@ async function transcribe(audio, id) {
 		const result = await pipeline(audio, opts);
 
 		const text = (result.text || '').trim();
+
+		// Filter out known Whisper hallucinations on silence/noise
+		if (!text || HALLUCINATION_RE.test(text)) {
+			return; // discard — not real speech
+		}
+
 		self.postMessage({ type: 'result', text, id });
 	} catch (err) {
 		self.postMessage({ type: 'error', message: `Transcription error: ${err.message}` });

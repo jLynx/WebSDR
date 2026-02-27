@@ -573,6 +573,7 @@ createApp({
 			this._whisperBuf = [];
 			this._whisperBufLen = 0;
 			this._whisperChunkId = 0;
+			this._whisperSilenceRun = 0;
 			this.whisper.active = true;
 		},
 		stopWhisper() {
@@ -628,28 +629,80 @@ createApp({
 				down[i] = samples48k[i * ratio];
 			}
 
-			this._whisperBuf.push(down);
-			this._whisperBufLen += down.length;
+			// Check if the active VFO has squelch enabled
+			const vfo = this.vfos[this.activeVfoIndex];
+			const squelchMode = vfo && vfo.squelchEnabled;
 
-			const TARGET = 16000 * this.whisper.chunkSeconds;
-			if (this._whisperBufLen >= TARGET) {
-				// Concat accumulated chunks
-				const full = new Float32Array(this._whisperBufLen);
-				let offset = 0;
-				for (const chunk of this._whisperBuf) {
-					full.set(chunk, offset);
-					offset += chunk.length;
+			// Compute RMS of this incoming chunk
+			let sumSq = 0;
+			for (let i = 0; i < down.length; i++) sumSq += down[i] * down[i];
+			const rms = Math.sqrt(sumSq / down.length);
+			const isSilent = rms < 0.005;
+
+			if (squelchMode) {
+				// ── Squelch-aware mode: accumulate entire transmission ──
+				if (!isSilent) {
+					// Audio is active — accumulate
+					this._whisperBuf.push(down);
+					this._whisperBufLen += down.length;
+					this._whisperSilenceRun = 0;
+
+					// Safety cap: if transmission exceeds 120s at 16 kHz, flush now
+					const MAX_CAP = 16000 * 120;
+					if (this._whisperBufLen >= MAX_CAP) {
+						this._flushWhisperBuf();
+					}
+				} else {
+					// Silence detected
+					if (this._whisperBufLen > 0) {
+						// Count consecutive silent chunks; flush after ~0.5 s of silence
+						// (acts as a debounce so brief squelch dips don't split words)
+						this._whisperSilenceRun = (this._whisperSilenceRun || 0) + down.length;
+						const SILENCE_FLUSH = 16000 * 0.5; // 0.5 s
+						if (this._whisperSilenceRun >= SILENCE_FLUSH) {
+							this._flushWhisperBuf();
+						}
+					}
+					// else: no buffered audio — nothing to do
 				}
-				this._whisperBuf = [];
-				this._whisperBufLen = 0;
+			} else {
+				// ── Fixed-interval mode (no squelch): use chunkSeconds selector ──
+				if (isSilent) return; // still skip pure silence
 
-				// Send to worker
-				const id = this._whisperChunkId++;
-				this._whisperWorker.postMessage(
-					{ type: 'transcribe', audio: full, id },
-					[full.buffer]   // transfer
-				);
+				this._whisperBuf.push(down);
+				this._whisperBufLen += down.length;
+
+				const TARGET = 16000 * this.whisper.chunkSeconds;
+				if (this._whisperBufLen >= TARGET) {
+					this._flushWhisperBuf();
+				}
 			}
+		},
+		/** Concatenate the accumulation buffer and send it to the Whisper worker. */
+		_flushWhisperBuf() {
+			if (this._whisperBufLen === 0) return;
+
+			const full = new Float32Array(this._whisperBufLen);
+			let offset = 0;
+			for (const chunk of this._whisperBuf) {
+				full.set(chunk, offset);
+				offset += chunk.length;
+			}
+			this._whisperBuf = [];
+			this._whisperBufLen = 0;
+			this._whisperSilenceRun = 0;
+
+			// Final RMS check on the entire buffer
+			let sumSq = 0;
+			for (let i = 0; i < full.length; i++) sumSq += full[i] * full[i];
+			const rms = Math.sqrt(sumSq / full.length);
+			if (rms < 0.003) return; // discard if overall energy is negligible
+
+			const id = this._whisperChunkId++;
+			this._whisperWorker.postMessage(
+				{ type: 'transcribe', audio: full, id },
+				[full.buffer]   // transfer
+			);
 		},
 		clearTranscript() {
 			this.whisper.log = [];
