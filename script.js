@@ -5,6 +5,44 @@ import { Waterfall, WaterfallGL } from "./utils.js";
 
 const Backend = Comlink.wrap(new Worker("./worker.js", { type: "module" }));
 
+// Color palette for N VFOs
+const VFO_COLORS = [
+	'#ff4444', '#4488ff', '#44cc44', '#ff44ff',
+	'#ffaa44', '#44cccc', '#cccc44', '#ff8844',
+];
+
+const makeDefaultVfo = (freq = 100.0) => ({
+	enabled: false,
+	freq: freq,
+	mode: 'wfm',
+	bandwidth: 150000,
+	snapInterval: 100000,
+	deEmphasis: '50us',
+	squelchEnabled: false,
+	squelchLevel: -100.0,
+	noiseReduction: false,
+	stereo: false,
+	lowPass: true,
+	highPass: false,
+	rds: false,
+	rdsRegion: 'eu',
+	volume: 50,
+	displayFreq: freq.toFixed(6).padStart(10, '0'),
+	focused: false,
+});
+
+// SDR++ mode defaults
+const MODE_DEFAULTS = {
+	wfm:  { bandwidth: 150000, snapInterval: 100000, deEmphasis: '50us', lowPass: true },
+	nfm:  { bandwidth: 12500,  snapInterval: 2500,   deEmphasis: 'none', lowPass: true },
+	am:   { bandwidth: 10000,  snapInterval: 1000,   deEmphasis: 'none', lowPass: false },
+	usb:  { bandwidth: 2800,   snapInterval: 100,    deEmphasis: 'none', lowPass: false },
+	lsb:  { bandwidth: 2800,   snapInterval: 100,    deEmphasis: 'none', lowPass: false },
+	dsb:  { bandwidth: 4600,   snapInterval: 100,    deEmphasis: 'none', lowPass: false },
+	cw:   { bandwidth: 200,    snapInterval: 10,     deEmphasis: 'none', lowPass: false },
+	raw:  { bandwidth: 48000,  snapInterval: 2500,   deEmphasis: 'none', lowPass: false },
+};
+
 createApp({
 	data() {
 		return {
@@ -26,32 +64,15 @@ createApp({
 				vga: 16,
 				ampEnabled: false,
 			},
-			audio: {
-				enabled: false,
-				freq: 100.0,
-				mode: 'wfm', // SDR++ default style
-				bandwidth: 150000,
-				snapInterval: 100000,
-				deEmphasis: '50us',
-				squelchEnabled: false,
-				squelchLevel: -100.0,
-				noiseReduction: false,
-				stereo: false,
-				lowPass: true,
-				highPass: false,
-				rds: false,
-				rdsRegion: 'eu',
-				volume: 50,
-			},
-			vfoDisplayFreq: "100.000000",
-			vfoFocused: false,
+			vfos: [makeDefaultVfo(100.0)],
+			activeVfoIndex: 0,
 			info: { boardName: "" },
 			hoverFreqText: "",
 			dspStats: null,
 			showStats: false,
 			view: {
 				zoomScale: 1.0,
-				zoomOffset: 0.0 // 0 to 1-1/scale
+				zoomOffset: 0.0
 			}
 		};
 	},
@@ -69,26 +90,54 @@ createApp({
 		}
 	},
 	methods: {
-		// Replaces the template usage of formatFreq so we can use a two-way input
 		formatFreq(mhz) {
 			if (!mhz) return "000.000000";
 			let s = mhz.toFixed(6);
 			return s.padStart(10, '0');
 		},
-		focusVfoFreq() {
-			this.vfoFocused = true;
+		vfoColor(index) {
+			return VFO_COLORS[index % VFO_COLORS.length];
 		},
-		applyVfoFreq(e) {
-			this.vfoFocused = false;
-			let val = parseFloat(this.vfoDisplayFreq);
+		vfoTint(index) {
+			const hex = VFO_COLORS[index % VFO_COLORS.length];
+			// Parse hex to rgba with 0.25 alpha
+			const r = parseInt(hex.slice(1, 3), 16);
+			const g = parseInt(hex.slice(3, 5), 16);
+			const b = parseInt(hex.slice(5, 7), 16);
+			return `rgba(${r}, ${g}, ${b}, 0.25)`;
+		},
+		focusVfoFreq(index) {
+			this.vfos[index].focused = true;
+		},
+		applyVfoFreq(e, index) {
+			const vfo = this.vfos[index];
+			vfo.focused = false;
+			let val = parseFloat(vfo.displayFreq);
 			if (!isNaN(val)) {
-				this.audio.freq = val;
-				this.vfoDisplayFreq = this.formatFreq(val);
-				this.updateBackendAudioParams();
+				vfo.freq = val;
+				vfo.displayFreq = this.formatFreq(val);
+				this.updateBackendVfoParams(index);
 			} else {
-				this.vfoDisplayFreq = this.formatFreq(this.audio.freq);
+				vfo.displayFreq = this.formatFreq(vfo.freq);
 			}
 			e.target.blur();
+		},
+		applyModeDefaults(index) {
+			const vfo = this.vfos[index];
+			const d = MODE_DEFAULTS[vfo.mode] || MODE_DEFAULTS.nfm;
+			if (vfo.mode === 'raw') {
+				vfo.bandwidth = this.radio.sampleRate;
+			} else {
+				vfo.bandwidth = d.bandwidth;
+			}
+			vfo.snapInterval = d.snapInterval;
+			vfo.deEmphasis = d.deEmphasis;
+			vfo.squelchEnabled = false;
+			vfo.squelchLevel = -100.0;
+			vfo.noiseReduction = false;
+			vfo.stereo = false;
+			vfo.lowPass = d.lowPass;
+			vfo.highPass = false;
 		},
 		labelFreq(percent) {
 			const freq = this.minFreq + percent * (this.maxFreq - this.minFreq);
@@ -183,9 +232,19 @@ createApp({
 				}
 			}, 500);
 
-			// Enable audio by default when starting stream
-			this.audio.enabled = true;
-			this.toggleAudioCheckbox();
+			// Add additional VFOs to the worker (first one is created by default in worker)
+			for (let i = 1; i < this.vfos.length; i++) {
+				await this.backend.addVfo();
+			}
+
+			// Enable first VFO by default when starting stream
+			this.vfos[0].enabled = true;
+			this.toggleVfoCheckbox(0);
+
+			// Send all VFO params to worker
+			for (let i = 0; i < this.vfos.length; i++) {
+				this.updateBackendVfoParams(i);
+			}
 		},
 		initCanvas() {
 			const { fftSize } = this.radio;
@@ -267,56 +326,58 @@ createApp({
 			ctx.fill();
 			ctx.restore();
 
-			// Draw VFO highlight
-			if (this.audio.freq !== null && this.audio.enabled) {
-				const bandwidthHz = this.audio.bandwidth;
+			// Draw VFO highlights
+			for (let vi = 0; vi < this.vfos.length; vi++) {
+				const vfo = this.vfos[vi];
+				if (vfo.freq === null || !vfo.enabled) continue;
 
+				const color = VFO_COLORS[vi % VFO_COLORS.length];
+				const bandwidthHz = vfo.bandwidth;
 				const currentSpanHz = this.radio.sampleRate / this.view.zoomScale;
 				const pixelWidth = (bandwidthHz / currentSpanHz) * w;
 
-				const offsetFreq = (this.audio.freq - this.radio.centerFreq) * 1e6;
+				const offsetFreq = (vfo.freq - this.radio.centerFreq) * 1e6;
 				const basePixel = (offsetFreq / this.radio.sampleRate) * w + (w / 2);
-
-				// Adjust for zoom
 				const zoomedPixelOffset = basePixel - (this.view.zoomOffset * w);
 				const centerPixel = zoomedPixelOffset * this.view.zoomScale;
 
-				// Red tint block
-				ctx.fillStyle = "rgba(255, 68, 68, 0.25)";
+				// Tint block
+				ctx.fillStyle = this.vfoTint(vi);
 				ctx.fillRect(centerPixel - pixelWidth / 2, 0, Math.max(pixelWidth, 2), h);
 
-				// Red center line
-				ctx.strokeStyle = "#ff4444";
+				// Center line
+				ctx.strokeStyle = color;
 				ctx.lineWidth = 1;
 				ctx.beginPath();
 				ctx.moveTo(centerPixel, 0);
 				ctx.lineTo(centerPixel, h);
 				ctx.stroke();
+
+				// Label
+				ctx.fillStyle = color;
+				ctx.font = "10px Inter, sans-serif";
+				ctx.fillText(`VFO ${vi + 1}`, centerPixel + 4, 12 + vi * 12);
 			}
 		},
-		async toggleAudioCheckbox(e) {
-			// e.target.checked is bound to this.audio.enabled, but we need to run init logic
-			if (this.audio.enabled && !this.audioCtx) {
+		async toggleVfoCheckbox(index) {
+			const anyEnabled = this.vfos.some(v => v.enabled);
+			if (anyEnabled && !this.audioCtx) {
 				const AudioContext = window.AudioContext || window.webkitAudioContext;
 				this.audioCtx = new AudioContext({ sampleRate: 48000 });
 				if (this.audioCtx.state === 'suspended') {
 					await this.audioCtx.resume();
 				}
 				this.gainNode = this.audioCtx.createGain();
-				// SDR++ uses volume² curve: powf(guiVolume, 2)
-				const vol = this.audio.volume / 100;
-				this.gainNode.gain.value = vol * vol;
+				this.gainNode.gain.value = 1.0; // Volume is handled per-VFO in worker
 				this.gainNode.connect(this.audioCtx.destination);
 				this.nextPlayTime = 0;
-				// Ring buffer to accumulate small audio chunks before scheduling
-				// Prevents gaps caused by scheduling many tiny buffers
-				this.audioRingBuf = new Float32Array(4800); // 100ms at 48kHz
+				this.audioRingBuf = new Float32Array(4800);
 				this.audioRingPos = 0;
 			}
-			this.updateBackendAudioParams();
+			this.updateBackendVfoParams(index);
 		},
 		playAudio(samples) {
-			if (!this.audio.enabled || !this.audioCtx) return;
+			if (!this.vfos.some(v => v.enabled) || !this.audioCtx) return;
 			if (this.audioCtx.state === 'suspended') return;
 
 			let floats;
@@ -363,27 +424,48 @@ createApp({
 			src.start(this.nextPlayTime);
 			this.nextPlayTime += buffer.duration;
 		},
-		updateBackendAudioParams() {
-			if (this.backend && this.running) {
-				this.backend.setAudioParams({
-					freq: this.audio.freq,
-					mode: this.audio.mode,
-					enabled: this.audio.enabled,
-					bandwidth: this.audio.bandwidth,
-					deEmphasis: this.audio.deEmphasis,
-					squelchEnabled: this.audio.squelchEnabled,
-					squelchLevel: this.audio.squelchLevel,
-					noiseReduction: this.audio.noiseReduction,
-					stereo: this.audio.stereo,
-					lowPass: this.audio.lowPass,
-					highPass: this.audio.highPass,
-					rds: this.audio.rds,
-					rdsRegion: this.audio.rdsRegion,
+		updateBackendVfoParams(index) {
+			if (this.backend && this.running && index >= 0 && index < this.vfos.length) {
+				const vfo = this.vfos[index];
+				this.backend.setVfoParams(index, {
+					freq: vfo.freq,
+					mode: vfo.mode,
+					enabled: vfo.enabled,
+					bandwidth: vfo.bandwidth,
+					deEmphasis: vfo.deEmphasis,
+					squelchEnabled: vfo.squelchEnabled,
+					squelchLevel: vfo.squelchLevel,
+					noiseReduction: vfo.noiseReduction,
+					stereo: vfo.stereo,
+					lowPass: vfo.lowPass,
+					highPass: vfo.highPass,
+					rds: vfo.rds,
+					rdsRegion: vfo.rdsRegion,
+					volume: vfo.volume,
 				});
 			}
 		},
+		async addVfo() {
+			const newVfo = makeDefaultVfo(this.radio.centerFreq);
+			this.vfos.push(newVfo);
+			if (this.backend && this.running) {
+				await this.backend.addVfo();
+				this.updateBackendVfoParams(this.vfos.length - 1);
+			}
+			this.activeVfoIndex = this.vfos.length - 1;
+		},
+		async removeVfo(index) {
+			if (this.vfos.length <= 1) return;
+			this.vfos.splice(index, 1);
+			if (this.backend && this.running) {
+				await this.backend.removeVfo(index);
+			}
+			if (this.activeVfoIndex >= this.vfos.length) {
+				this.activeVfoIndex = this.vfos.length - 1;
+			}
+		},
 		saveSetting() {
-			const json = JSON.stringify({ radio: this.radio, gains: this.gains, audio: this.audio, view: this.view, display: this.display });
+			const json = JSON.stringify({ radio: this.radio, gains: this.gains, vfos: this.vfos, activeVfoIndex: this.activeVfoIndex, view: this.view, display: this.display });
 			localStorage.setItem('sdr-web-setting', json);
 		},
 		loadSetting() {
@@ -393,10 +475,22 @@ createApp({
 					const setting = JSON.parse(json);
 					if (setting.radio) Object.assign(this.radio, setting.radio);
 					if (setting.gains) Object.assign(this.gains, setting.gains);
-					if (setting.audio) Object.assign(this.audio, setting.audio);
+					// Handle new format (vfos array) or legacy format (audio/audio2)
+					if (setting.vfos && Array.isArray(setting.vfos)) {
+						this.vfos = setting.vfos.map(v => ({ ...makeDefaultVfo(), ...v, enabled: false }));
+					} else {
+						if (setting.audio) {
+							Object.assign(this.vfos[0], setting.audio, { enabled: false, displayFreq: this.formatFreq(setting.audio.freq || 100.0), focused: false });
+						}
+						if (setting.audio2) {
+							const vfo2 = { ...makeDefaultVfo(), ...setting.audio2, enabled: false, displayFreq: this.formatFreq(setting.audio2.freq || 100.0), focused: false };
+							this.vfos.push(vfo2);
+						}
+					}
+					if (setting.activeVfoIndex !== undefined) this.activeVfoIndex = setting.activeVfoIndex;
+					else if (setting.activeVfo) this.activeVfoIndex = setting.activeVfo - 1;
 					if (setting.view) Object.assign(this.view, setting.view);
 					if (setting.display) Object.assign(this.display, setting.display);
-					this.audio.enabled = false; // ensure audio is physically off on load
 				}
 			} catch (e) { }
 		},
@@ -468,114 +562,15 @@ createApp({
 			this.saveSetting();
 		}, { deep: true });
 
-		this.$watch('audio', (newVal, oldVal) => {
-			if (this.gainNode) {
-				const vol = this.audio.volume / 100;
-				this.gainNode.gain.value = vol * vol; // SDR++ volume² curve
+		this.$watch('vfos', () => {
+			for (let i = 0; i < this.vfos.length; i++) {
+				if (!this.vfos[i].focused) {
+					this.vfos[i].displayFreq = this.formatFreq(this.vfos[i].freq);
+				}
+				this.updateBackendVfoParams(i);
 			}
-			if (!this.vfoFocused) {
-				this.vfoDisplayFreq = this.formatFreq(this.audio.freq);
-			}
-			this.updateBackendAudioParams();
 			this.saveSetting();
 		}, { deep: true });
-
-		this.$watch(() => this.audio.mode, (newMode, oldMode) => {
-			if (newMode === oldMode) return; // Ignore init or identical calls
-
-			// Apply defaults for the specific mode based on SDR++
-			// Apply SDR++ defaults for each demodulator mode
-			switch (newMode) {
-				case 'wfm':
-					this.audio.bandwidth = 150000;
-					this.audio.snapInterval = 100000;
-					this.audio.deEmphasis = '50us';
-					this.audio.squelchEnabled = false;
-					this.audio.squelchLevel = -100.0;
-					this.audio.noiseReduction = false;
-					this.audio.stereo = false;
-					this.audio.lowPass = true;
-					this.audio.highPass = false;
-					break;
-				case 'nfm':
-					this.audio.bandwidth = 12500;
-					this.audio.snapInterval = 2500;
-					this.audio.deEmphasis = 'none';
-					this.audio.squelchEnabled = false;
-					this.audio.squelchLevel = -100.0;
-					this.audio.noiseReduction = false;
-					this.audio.stereo = false;
-					this.audio.lowPass = true;
-					this.audio.highPass = false;
-					break;
-				case 'am':
-					this.audio.bandwidth = 10000;
-					this.audio.snapInterval = 1000;
-					this.audio.deEmphasis = 'none';
-					this.audio.squelchEnabled = false;
-					this.audio.squelchLevel = -100.0;
-					this.audio.noiseReduction = false;
-					this.audio.stereo = false;
-					this.audio.lowPass = false;
-					this.audio.highPass = false;
-					break;
-				case 'usb':
-					this.audio.bandwidth = 2800;
-					this.audio.snapInterval = 100;
-					this.audio.deEmphasis = 'none';
-					this.audio.squelchEnabled = false;
-					this.audio.squelchLevel = -100.0;
-					this.audio.noiseReduction = false;
-					this.audio.stereo = false;
-					this.audio.lowPass = false;
-					this.audio.highPass = false;
-					break;
-				case 'lsb':
-					this.audio.bandwidth = 2800;
-					this.audio.snapInterval = 100;
-					this.audio.deEmphasis = 'none';
-					this.audio.squelchEnabled = false;
-					this.audio.squelchLevel = -100.0;
-					this.audio.noiseReduction = false;
-					this.audio.stereo = false;
-					this.audio.lowPass = false;
-					this.audio.highPass = false;
-					break;
-				case 'dsb':
-					this.audio.bandwidth = 4600;
-					this.audio.snapInterval = 100;
-					this.audio.deEmphasis = 'none';
-					this.audio.squelchEnabled = false;
-					this.audio.squelchLevel = -100.0;
-					this.audio.noiseReduction = false;
-					this.audio.stereo = false;
-					this.audio.lowPass = false;
-					this.audio.highPass = false;
-					break;
-				case 'cw':
-					this.audio.bandwidth = 200;
-					this.audio.snapInterval = 10;
-					this.audio.deEmphasis = 'none';
-					this.audio.squelchEnabled = false;
-					this.audio.squelchLevel = -100.0;
-					this.audio.noiseReduction = false;
-					this.audio.stereo = false;
-					this.audio.lowPass = false;
-					this.audio.highPass = false;
-					break;
-				case 'raw':
-					this.audio.bandwidth = this.radio.sampleRate;
-					this.audio.snapInterval = 2500;
-					this.audio.deEmphasis = 'none';
-					this.audio.squelchEnabled = false;
-					this.audio.squelchLevel = -100.0;
-					this.audio.noiseReduction = false;
-					this.audio.stereo = false;
-					this.audio.lowPass = false;
-					this.audio.highPass = false;
-					break;
-			}
-		});
 
 		this.$watch('view', () => {
 			this.applyZoomToEngine();
@@ -608,8 +603,11 @@ createApp({
 		const handleMouseMove = (e) => {
 			if (isDraggingVFO) {
 				const f = getFreqFromEvent(e);
-				this.audio.freq = parseFloat(f.toFixed(3));
-				this.updateBackendAudioParams();
+				const idx = this.activeVfoIndex;
+				if (idx >= 0 && idx < this.vfos.length) {
+					this.vfos[idx].freq = parseFloat(f.toFixed(3));
+					this.updateBackendVfoParams(idx);
+				}
 			} else if (isPanning) {
 				const dx = e.clientX - lastPanX;
 				lastPanX = e.clientX;
@@ -640,11 +638,14 @@ createApp({
 
 		const handleMouseDown = (e) => {
 			if (e.button === 0) {
-				// Left click: set VFO
+				// Left click: set active VFO frequency
 				isDraggingVFO = true;
 				const f = getFreqFromEvent(e);
-				this.audio.freq = parseFloat(f.toFixed(3));
-				this.updateBackendAudioParams();
+				const idx = this.activeVfoIndex;
+				if (idx >= 0 && idx < this.vfos.length) {
+					this.vfos[idx].freq = parseFloat(f.toFixed(3));
+					this.updateBackendVfoParams(idx);
+				}
 			} else if (e.button === 2) {
 				// Right click: pan
 				isPanning = true;

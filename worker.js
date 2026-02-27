@@ -324,14 +324,15 @@ class Worker {
 		// ── Audio DDC setup ───────────────────────────────────────────
 		// Full SDR++ pipeline in Rust: NCO → polyphase resampler (→50kHz)
 		// → channel FIR → squelch → FM demod → post-demod FIR → audio resampler (→48kHz)
-		this.audioParams = { freq: centerFreq, mode: 'wfm', enabled: false, deEmphasis: '50us', squelchEnabled: false, squelchLevel: -100.0, lowPass: true, highPass: false, bandwidth: 150000 };
-		const initialBandwidth = this.audioParams.bandwidth || 150000;
+		const initialBandwidth = 150000;
 
-		// Initialize the Rust DSP processor
-		if (this.ddc) {
-			this.ddc.free();
-		}
-		this.ddc = new DspProcessor(sampleRate, 0.0, initialBandwidth);
+		// Free any existing DDCs
+		if (this.ddcs) this.ddcs.forEach(d => { try { d.free(); } catch(_){} });
+
+		// Initialize dynamic VFO arrays (start with one VFO)
+		const defaultVfoParams = { freq: centerFreq, mode: 'wfm', enabled: false, deEmphasis: '50us', squelchEnabled: false, squelchLevel: -100.0, lowPass: true, highPass: false, bandwidth: initialBandwidth, volume: 50 };
+		this.vfoParams = [{ ...defaultVfoParams }];
+		this.ddcs = [new DspProcessor(sampleRate, 0.0, initialBandwidth)];
 
 		// IF sample rates per mode (matches SDR++ getIFSampleRate())
 		const IF_RATES = {
@@ -348,10 +349,10 @@ class Worker {
 		// Use the max possible IF rate (WFM 250kHz) for buffer sizing
 		const MAX_IF_RATE = 250000;
 		const maxDdcOut = Math.ceil(131072 * MAX_IF_RATE / sampleRate) * 2 + 4096;
-		const ddcOutput = new Float32Array(maxDdcOut);
+		this.ddcOutputs = [new Float32Array(maxDdcOut)];
 
 		// ── Audio Demodulator state (matching SDR++ radio_module.h) ───
-		const state = {
+		const makeVfoState = () => ({
 			// AM demod state (non-FM modes use JS-side demod)
 			dcAvg: 0,
 			carrierAgcGain: 1.0,
@@ -373,7 +374,14 @@ class Worker {
 			lastBandwidth: initialBandwidth,
 			// Track last mode to detect mode switches
 			lastMode: '',
-		};
+		});
+		this.vfoStates = [makeVfoState()];
+
+		// Store factories for addVfo/removeVfo
+		this._makeVfoState = makeVfoState;
+		this._sampleRate = sampleRate;
+		this._maxDdcOut = maxDdcOut;
+		this._centerFreq = centerFreq;
 
 		// ── DSP Performance Counters ──────────────────────────────────
 		const perf = {
@@ -452,8 +460,206 @@ class Worker {
 			}
 		};
 
+		// ── Audio Processing — helper processes a single VFO ──────────
+		// Returns Float32Array of audio samples, or null if none produced
+		const processVfoAudio = (signed, ddc, params, vfoState, ddcOut) => {
+			if (!params.enabled) return null;
+
+			// Shift freq: The tuned freq relative to the center freq
+			const shiftHz = (params.freq - centerFreq) * 1e6;
+			ddc.set_shift(sampleRate, shiftHz);
+
+			const mode = params.mode;
+			const bw = params.bandwidth || 150000;
+
+			// Detect mode switch → reconfigure IF rate & reset all DSP state
+			if (mode !== vfoState.lastMode) {
+				vfoState.lastMode = mode;
+				vfoState.deemphPrev = 0;
+				vfoState.dcAvg = 0;
+				vfoState.agcGain = 1.0;
+				vfoState.ssbPhase = 0;
+
+				ddc.set_wfm_mode(mode === 'wfm');
+
+				const newIfRate = IF_RATES[mode] || IF_RATES.nfm;
+				if (newIfRate !== vfoState.currentIfRate) {
+					vfoState.currentIfRate = newIfRate;
+					ddc.set_if_sample_rate(newIfRate);
+					vfoState.audioResampler = new RationalResampler(newIfRate, AUDIO_RATE);
+				} else {
+					ddc.reset();
+				}
+			}
+
+			// Update bandwidth in Rust if changed
+			if (bw !== vfoState.lastBandwidth) {
+				ddc.set_bandwidth(bw);
+				vfoState.lastBandwidth = bw;
+			}
+
+			// Update squelch in Rust
+			ddc.set_squelch(
+				params.squelchLevel || -100.0,
+				!!params.squelchEnabled
+			);
+
+			if (mode === 'wfm' || mode === 'nfm') {
+				// ── FM Path: Full pipeline in Rust (matches SDR++ exactly) ────
+				const t0 = performance.now();
+				const numAudioSamples = ddc.process(signed, ddcOut);
+				const elapsed = performance.now() - t0;
+				perf.audioCalls++;
+				perf.dspTimeSum += elapsed;
+				if (elapsed > perf.dspTimeMax) perf.dspTimeMax = elapsed;
+				if (numAudioSamples === 0) { perf.droppedChunks++; return null; }
+				perf.audioSamplesOut += numAudioSamples;
+
+				let result = new Float32Array(ddcOut.subarray(0, numAudioSamples));
+
+				// ── De-emphasis (SDR++ filter/deephasis.h) ────────────────
+				if (params.deEmphasis !== 'none') {
+					const dt = 1.0 / AUDIO_RATE;
+					let tau;
+					switch (params.deEmphasis) {
+						case '22us': tau = 22e-6; break;
+						case '50us': tau = 50e-6; break;
+						case '75us': tau = 75e-6; break;
+						default: tau = 50e-6; break;
+					}
+					const alpha = dt / (tau + dt);
+					for (let i = 0; i < result.length; i++) {
+						vfoState.deemphPrev = alpha * result[i] + (1 - alpha) * vfoState.deemphPrev;
+						result[i] = vfoState.deemphPrev;
+					}
+				}
+
+				// Hard-clip as safety net
+				for (let i = 0; i < result.length; i++) {
+					if (result[i] > 1.0) result[i] = 1.0;
+					else if (result[i] < -1.0) result[i] = -1.0;
+				}
+
+				return result;
+			} else {
+				// ── Non-FM Path: NCO + resampler + channel FIR in Rust, demod in JS ──
+				const numOutValues = ddc.process_iq_only(signed, ddcOut);
+				const numDemodSamples = numOutValues / 2;
+				if (numDemodSamples === 0) return null;
+
+				// ── Squelch (SDR++ style: average magnitude in dB) ────────
+				let squelchMag = 0;
+				for (let i = 0; i < numDemodSamples; i++) {
+					const dI = ddcOut[i * 2];
+					const dQ = ddcOut[i * 2 + 1];
+					squelchMag += Math.sqrt(dI * dI + dQ * dQ);
+				}
+				squelchMag /= numDemodSamples;
+				const squelchDb = 10 * Math.log10(squelchMag + 1e-12);
+
+				if (params.squelchEnabled && squelchDb < params.squelchLevel) {
+					const zeros = new Float32Array(numDemodSamples);
+					const result = vfoState.audioResampler.process(zeros);
+					return result.length > 0 ? result : null;
+				}
+
+				const audioDemodRateSamples = new Float32Array(numDemodSamples);
+				const ifRate = vfoState.currentIfRate;
+
+				if (mode === 'am') {
+					for (let i = 0; i < numDemodSamples; i++) {
+						const dI = ddcOut[i * 2];
+						const dQ = ddcOut[i * 2 + 1];
+						const mag = Math.sqrt(dI * dI + dQ * dQ);
+						const dcAlpha = 0.9999;
+						vfoState.dcAvg = dcAlpha * vfoState.dcAvg + (1 - dcAlpha) * mag;
+						let demodSample = mag - vfoState.dcAvg;
+						const agcAttack = 50.0 / ifRate;
+						const agcDecay = 5.0 / ifRate;
+						const absSample = Math.abs(demodSample);
+						if (absSample > vfoState.agcGain) {
+							vfoState.agcGain = vfoState.agcGain * (1 - agcAttack) + absSample * agcAttack;
+						} else {
+							vfoState.agcGain = vfoState.agcGain * (1 - agcDecay) + absSample * agcDecay;
+						}
+						const agcScale = vfoState.agcGain > 1e-6 ? (0.5 / vfoState.agcGain) : 1.0;
+						audioDemodRateSamples[i] = demodSample * agcScale;
+					}
+				}
+				else if (mode === 'usb' || mode === 'lsb' || mode === 'dsb') {
+					for (let i = 0; i < numDemodSamples; i++) {
+						const dI = ddcOut[i * 2];
+						const dQ = ddcOut[i * 2 + 1];
+						let shiftFreq = 0;
+						if (mode === 'usb') shiftFreq = bw / 2.0;
+						else if (mode === 'lsb') shiftFreq = -bw / 2.0;
+						const phaseInc = (shiftFreq / ifRate) * 2 * Math.PI;
+						vfoState.ssbPhase += phaseInc;
+						if (vfoState.ssbPhase > Math.PI) vfoState.ssbPhase -= 2 * Math.PI;
+						if (vfoState.ssbPhase < -Math.PI) vfoState.ssbPhase += 2 * Math.PI;
+						const cosP = Math.cos(vfoState.ssbPhase);
+						const sinP = Math.sin(vfoState.ssbPhase);
+						const rI = dI * cosP - dQ * sinP;
+						let demodSample = rI;
+						const agcAttack = 50.0 / ifRate;
+						const agcDecay = 5.0 / ifRate;
+						const absSample = Math.abs(demodSample);
+						if (absSample > vfoState.agcGain) {
+							vfoState.agcGain = vfoState.agcGain * (1 - agcAttack) + absSample * agcAttack;
+						} else {
+							vfoState.agcGain = vfoState.agcGain * (1 - agcDecay) + absSample * agcDecay;
+						}
+						const agcScale = vfoState.agcGain > 1e-6 ? (0.5 / vfoState.agcGain) : 1.0;
+						audioDemodRateSamples[i] = demodSample * agcScale;
+					}
+				}
+				else if (mode === 'cw') {
+					for (let i = 0; i < numDemodSamples; i++) {
+						const dI = ddcOut[i * 2];
+						const dQ = ddcOut[i * 2 + 1];
+						const cwTone = vfoState.cwTone || 700;
+						const phaseInc = (cwTone / ifRate) * 2 * Math.PI;
+						vfoState.ssbPhase += phaseInc;
+						if (vfoState.ssbPhase > Math.PI) vfoState.ssbPhase -= 2 * Math.PI;
+						if (vfoState.ssbPhase < -Math.PI) vfoState.ssbPhase += 2 * Math.PI;
+						const cosP = Math.cos(vfoState.ssbPhase);
+						const sinP = Math.sin(vfoState.ssbPhase);
+						const rI = dI * cosP - dQ * sinP;
+						let demodSample = rI;
+						const agcAttack = 50.0 / ifRate;
+						const agcDecay = 5.0 / ifRate;
+						const absSample = Math.abs(demodSample);
+						if (absSample > vfoState.agcGain) {
+							vfoState.agcGain = vfoState.agcGain * (1 - agcAttack) + absSample * agcAttack;
+						} else {
+							vfoState.agcGain = vfoState.agcGain * (1 - agcDecay) + absSample * agcDecay;
+						}
+						const agcScale = vfoState.agcGain > 1e-6 ? (0.5 / vfoState.agcGain) : 1.0;
+						audioDemodRateSamples[i] = demodSample * agcScale;
+					}
+				}
+				else if (mode === 'raw') {
+					for (let i = 0; i < numDemodSamples; i++) {
+						audioDemodRateSamples[i] = ddcOut[i * 2];
+					}
+				}
+				else {
+					audioDemodRateSamples.fill(0);
+				}
+
+				let result = vfoState.audioResampler.process(audioDemodRateSamples);
+				if (result.length === 0) return null;
+
+				for (let i = 0; i < result.length; i++) {
+					if (result[i] > 1.0) result[i] = 1.0;
+					else if (result[i] < -1.0) result[i] = -1.0;
+				}
+
+				return result;
+			}
+		};
+
 		await hackrf.startRx((data) => {
-			state.chunkCount++;
 			perf.usbCallbacks++;
 
 			// 1. Waterfall / Spectrum processing
@@ -468,243 +674,52 @@ class Worker {
 					// ~30 fps update
 					if (spectrumThrottle % 15 === 0) {
 						spectrumFft.fft(iqBuffer, spectrumOutput);
-						// `spectrumOutput` is already DC-centered by the Rust FFT implementation
-						// Copy the array because `spectrumOutput` is reused for the next frame
 						spectrumCallback(new Float32Array(spectrumOutput));
 					}
 				}
 			}
 
-			// 2. Audio Processing (if enabled)
-			if (this.audioParams.enabled) {
-			  try {
-				// Shift freq: The tuned freq relative to the center freq
-				const shiftHz = (this.audioParams.freq - centerFreq) * 1e6;
-				// Since `this.audioParams.freq` might have changed, update DDC shift
-				this.ddc.set_shift(sampleRate, shiftHz);
-
-				const mode = this.audioParams.mode;
-				const bw = this.audioParams.bandwidth || 150000;
-
-				// Detect mode switch → reconfigure IF rate & reset all DSP state
-				if (mode !== state.lastMode) {
-					state.lastMode = mode;
-					state.deemphPrev = 0;
-					state.dcAvg = 0;
-					state.agcGain = 1.0;
-					state.ssbPhase = 0;
-
-					// Set WFM mode flag (must be before set_if_sample_rate so
-					// the post-demod filter uses correct cutoff: 15kHz for WFM,
-					// bandwidth/2 for NFM — matches SDR++ broadcast_fm.h)
-					this.ddc.set_wfm_mode(mode === 'wfm');
-
-					// Set IF sample rate per mode (matches SDR++ getIFSampleRate())
-					const newIfRate = IF_RATES[mode] || IF_RATES.nfm;
-					if (newIfRate !== state.currentIfRate) {
-						state.currentIfRate = newIfRate;
-						this.ddc.set_if_sample_rate(newIfRate);
-						// Rebuild non-FM audio resampler for new IF rate
-						state.audioResampler = new RationalResampler(newIfRate, AUDIO_RATE);
-					} else {
-						this.ddc.reset();
-					}
+			// 2. Audio Processing — process all VFOs and mix
+			try {
+				const vfoOutputs = [];
+				for (let v = 0; v < this.vfoParams.length; v++) {
+					if (!this.ddcs[v] || !this.vfoStates[v] || !this.ddcOutputs[v]) continue;
+					this.vfoStates[v].chunkCount++;
+					const out = processVfoAudio(signed, this.ddcs[v], this.vfoParams[v], this.vfoStates[v], this.ddcOutputs[v]);
+					if (out) vfoOutputs.push({ audio: out, volume: this.vfoParams[v].volume || 50 });
 				}
 
-				// Update bandwidth in Rust if changed
-				if (bw !== state.lastBandwidth) {
-					this.ddc.set_bandwidth(bw);
-					state.lastBandwidth = bw;
+				if (vfoOutputs.length === 1) {
+					// Single VFO: apply volume and push
+					const { audio, volume } = vfoOutputs[0];
+					const v = volume / 100;
+					const vol = v * v;
+					for (let i = 0; i < audio.length; i++) {
+						audio[i] *= vol;
+						if (audio[i] > 1.0) audio[i] = 1.0;
+						else if (audio[i] < -1.0) audio[i] = -1.0;
+					}
+					pushAudio(audio);
+				} else if (vfoOutputs.length > 1) {
+					// Mix multiple VFOs with per-VFO volume (SDR++ volume² curve)
+					const maxLen = Math.max(...vfoOutputs.map(o => o.audio.length));
+					const mixed = new Float32Array(maxLen);
+					for (const { audio, volume } of vfoOutputs) {
+						const v = volume / 100;
+						const vol = v * v;
+						for (let i = 0; i < audio.length; i++) {
+							mixed[i] += audio[i] * vol;
+						}
+					}
+					// Hard clip
+					for (let i = 0; i < maxLen; i++) {
+						if (mixed[i] > 1.0) mixed[i] = 1.0;
+						else if (mixed[i] < -1.0) mixed[i] = -1.0;
+					}
+					pushAudio(mixed);
 				}
-
-				// Update squelch in Rust
-				this.ddc.set_squelch(
-					this.audioParams.squelchLevel || -100.0,
-					!!this.audioParams.squelchEnabled
-				);
-
-				if (mode === 'wfm' || mode === 'nfm') {
-					// ── FM Path: Full pipeline in Rust (matches SDR++ exactly) ────
-					const t0 = performance.now();
-					const numAudioSamples = this.ddc.process(signed, ddcOutput);
-					const elapsed = performance.now() - t0;
-					perf.audioCalls++;
-					perf.dspTimeSum += elapsed;
-					if (elapsed > perf.dspTimeMax) perf.dspTimeMax = elapsed;
-					if (numAudioSamples === 0) { perf.droppedChunks++; return; }
-					perf.audioSamplesOut += numAudioSamples;
-
-					// Copy to writable buffer (ddcOutput is reused)
-					let result = new Float32Array(ddcOutput.subarray(0, numAudioSamples));
-
-					// ── De-emphasis (SDR++ filter/deephasis.h) ────────────────
-					// SDR++ formula: alpha = dt / (tau + dt), y = alpha*x + (1-alpha)*y_prev
-					if (this.audioParams.deEmphasis !== 'none') {
-						const dt = 1.0 / AUDIO_RATE;
-						let tau;
-						switch (this.audioParams.deEmphasis) {
-							case '22us': tau = 22e-6; break;
-							case '50us': tau = 50e-6; break;
-							case '75us': tau = 75e-6; break;
-							default: tau = 50e-6; break;
-						}
-						const alpha = dt / (tau + dt);
-						for (let i = 0; i < result.length; i++) {
-							state.deemphPrev = alpha * result[i] + (1 - alpha) * state.deemphPrev;
-							result[i] = state.deemphPrev;
-						}
-					}
-
-					// No AGC for FM modes (matches SDR++: quadrature demod already
-					// normalizes output by 1/deviation, producing ~±1.0 range).
-					// Volume is handled by the gain node in the audio context.
-					// Hard-clip as safety net.
-					for (let i = 0; i < result.length; i++) {
-						if (result[i] > 1.0) result[i] = 1.0;
-						else if (result[i] < -1.0) result[i] = -1.0;
-					}
-
-					pushAudio(result);
-				} else {
-					// ── Non-FM Path: NCO + resampler + channel FIR in Rust, demod in JS ──
-					// Rust handles: NCO → IQ polyphase resampler (→50kHz) → channel FIR
-					// Output: interleaved IQ at 50 kHz (IF_RATE)
-					const numOutValues = this.ddc.process_iq_only(signed, ddcOutput);
-					const numDemodSamples = numOutValues / 2;
-					if (numDemodSamples === 0) return;
-
-					// ── Squelch (SDR++ style: average magnitude in dB) ────────
-					let squelchMag = 0;
-					for (let i = 0; i < numDemodSamples; i++) {
-						const dI = ddcOutput[i * 2];
-						const dQ = ddcOutput[i * 2 + 1];
-						squelchMag += Math.sqrt(dI * dI + dQ * dQ);
-					}
-					squelchMag /= numDemodSamples;
-					const squelchDb = 10 * Math.log10(squelchMag + 1e-12);
-
-					if (this.audioParams.squelchEnabled && squelchDb < this.audioParams.squelchLevel) {
-						const zeros = new Float32Array(numDemodSamples);
-						const result = state.audioResampler.process(zeros);
-						if (result.length > 0) pushAudio(result);
-						return;
-					}
-
-					const audioDemodRateSamples = new Float32Array(numDemodSamples);
-
-					if (mode === 'am') {
-						// ── AM Demod (SDR++ am.h) ─────────────────────────
-						for (let i = 0; i < numDemodSamples; i++) {
-							const dI = ddcOutput[i * 2];
-							const dQ = ddcOutput[i * 2 + 1];
-							const mag = Math.sqrt(dI * dI + dQ * dQ);
-
-							// DC Blocker
-							const dcAlpha = 0.9999;
-							state.dcAvg = dcAlpha * state.dcAvg + (1 - dcAlpha) * mag;
-							let demodSample = mag - state.dcAvg;
-
-							// AGC (attack=50/15000, decay=5/15000)
-							const agcAttack = 50.0 / 15000.0;
-							const agcDecay = 5.0 / 15000.0;
-							const absSample = Math.abs(demodSample);
-							if (absSample > state.agcGain) {
-								state.agcGain = state.agcGain * (1 - agcAttack) + absSample * agcAttack;
-							} else {
-								state.agcGain = state.agcGain * (1 - agcDecay) + absSample * agcDecay;
-							}
-							const agcScale = state.agcGain > 1e-6 ? (0.5 / state.agcGain) : 1.0;
-							audioDemodRateSamples[i] = demodSample * agcScale;
-						}
-					}
-					else if (mode === 'usb' || mode === 'lsb' || mode === 'dsb') {
-						// ── SSB Demod (SDR++ ssb.h) ───────────────────────
-						for (let i = 0; i < numDemodSamples; i++) {
-							const dI = ddcOutput[i * 2];
-							const dQ = ddcOutput[i * 2 + 1];
-
-							let shiftFreq = 0;
-							if (mode === 'usb') shiftFreq = bw / 2.0;
-							else if (mode === 'lsb') shiftFreq = -bw / 2.0;
-
-							const phaseInc = (shiftFreq / IF_RATE) * 2 * Math.PI;
-							state.ssbPhase += phaseInc;
-							if (state.ssbPhase > Math.PI) state.ssbPhase -= 2 * Math.PI;
-							if (state.ssbPhase < -Math.PI) state.ssbPhase += 2 * Math.PI;
-
-							const cosP = Math.cos(state.ssbPhase);
-							const sinP = Math.sin(state.ssbPhase);
-							const rI = dI * cosP - dQ * sinP;
-							let demodSample = rI;
-
-							// AGC (attack=50/24000, decay=5/24000)
-							const agcAttack = 50.0 / 24000.0;
-							const agcDecay = 5.0 / 24000.0;
-							const absSample = Math.abs(demodSample);
-							if (absSample > state.agcGain) {
-								state.agcGain = state.agcGain * (1 - agcAttack) + absSample * agcAttack;
-							} else {
-								state.agcGain = state.agcGain * (1 - agcDecay) + absSample * agcDecay;
-							}
-							const agcScale = state.agcGain > 1e-6 ? (0.5 / state.agcGain) : 1.0;
-							audioDemodRateSamples[i] = demodSample * agcScale;
-						}
-					}
-					else if (mode === 'cw') {
-						// ── CW Demod (SDR++ cw.h) ─────────────────────────
-						for (let i = 0; i < numDemodSamples; i++) {
-							const dI = ddcOutput[i * 2];
-							const dQ = ddcOutput[i * 2 + 1];
-
-							const cwTone = state.cwTone || 700;
-							const phaseInc = (cwTone / IF_RATE) * 2 * Math.PI;
-							state.ssbPhase += phaseInc;
-							if (state.ssbPhase > Math.PI) state.ssbPhase -= 2 * Math.PI;
-							if (state.ssbPhase < -Math.PI) state.ssbPhase += 2 * Math.PI;
-
-							const cosP = Math.cos(state.ssbPhase);
-							const sinP = Math.sin(state.ssbPhase);
-							const rI = dI * cosP - dQ * sinP;
-							let demodSample = rI;
-
-							// AGC (attack=50/3000, decay=5/3000)
-							const agcAttack = 50.0 / 3000.0;
-							const agcDecay = 5.0 / 3000.0;
-							const absSample = Math.abs(demodSample);
-							if (absSample > state.agcGain) {
-								state.agcGain = state.agcGain * (1 - agcAttack) + absSample * agcAttack;
-							} else {
-								state.agcGain = state.agcGain * (1 - agcDecay) + absSample * agcDecay;
-							}
-							const agcScale = state.agcGain > 1e-6 ? (0.5 / state.agcGain) : 1.0;
-							audioDemodRateSamples[i] = demodSample * agcScale;
-						}
-					}
-					else if (mode === 'raw') {
-						// ── RAW Mode ────────────────────────────
-						for (let i = 0; i < numDemodSamples; i++) {
-							audioDemodRateSamples[i] = ddcOutput[i * 2];
-						}
-					}
-					else {
-						audioDemodRateSamples.fill(0);
-					}
-
-					// ── Audio Resampling (50 kHz → 48 kHz, polyphase) ─────
-					let result = state.audioResampler.process(audioDemodRateSamples);
-					if (result.length === 0) return;
-
-					// Hard-clip (non-FM modes already have per-sample AGC)
-					for (let i = 0; i < result.length; i++) {
-						if (result[i] > 1.0) result[i] = 1.0;
-						else if (result[i] < -1.0) result[i] = -1.0;
-					}
-
-					pushAudio(result);
-				}
-			  } catch (e) {
+			} catch (e) {
 				console.error('Audio DSP error:', e.message || e);
-			  }
 			}
 		});
 
@@ -717,24 +732,43 @@ class Worker {
 		return this._perf ? this._perf.report : null;
 	}
 
-	setAudioParams(params) {
-		if (this.audioParams) {
-			Object.assign(this.audioParams, params);
-			console.log("Audio params updated:", this.audioParams);
+	setVfoParams(index, params) {
+		if (!this.vfoParams || index < 0 || index >= this.vfoParams.length) return;
+		Object.assign(this.vfoParams[index], params);
 
-			// Propagate bandwidth and squelch changes to Rust DSP
-			if (this.ddc) {
-				if (params.bandwidth !== undefined) {
-					this.ddc.set_bandwidth(params.bandwidth);
-				}
-				if (params.squelchLevel !== undefined || params.squelchEnabled !== undefined) {
-					this.ddc.set_squelch(
-						this.audioParams.squelchLevel || -100.0,
-						!!this.audioParams.squelchEnabled
-					);
-				}
+		if (this.ddcs && this.ddcs[index]) {
+			if (params.bandwidth !== undefined) {
+				this.ddcs[index].set_bandwidth(params.bandwidth);
+			}
+			if (params.squelchLevel !== undefined || params.squelchEnabled !== undefined) {
+				this.ddcs[index].set_squelch(
+					this.vfoParams[index].squelchLevel || -100.0,
+					!!this.vfoParams[index].squelchEnabled
+				);
 			}
 		}
+	}
+
+	addVfo() {
+		if (!this.vfoParams) return -1;
+		const centerFreq = this._centerFreq || 100.0;
+		const bw = 150000;
+		const params = { freq: centerFreq, mode: 'wfm', enabled: false, deEmphasis: '50us', squelchEnabled: false, squelchLevel: -100.0, lowPass: true, highPass: false, bandwidth: bw, volume: 50 };
+		this.vfoParams.push(params);
+		this.ddcs.push(new DspProcessor(this._sampleRate, 0.0, bw));
+		this.vfoStates.push(this._makeVfoState());
+		this.ddcOutputs.push(new Float32Array(this._maxDdcOut));
+		return this.vfoParams.length - 1;
+	}
+
+	removeVfo(index) {
+		if (!this.vfoParams || index < 0 || index >= this.vfoParams.length) return;
+		if (this.vfoParams.length <= 1) return; // Keep at least one VFO
+		try { this.ddcs[index].free(); } catch(_) {}
+		this.vfoParams.splice(index, 1);
+		this.ddcs.splice(index, 1);
+		this.vfoStates.splice(index, 1);
+		this.ddcOutputs.splice(index, 1);
 	}
 
 	async setSampleRateManual(freq, divider) {

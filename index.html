@@ -13,9 +13,21 @@
 		<!-- Top Bar -->
 		<div class="top-bar">
 			<div class="brand">SDR WebViewer</div>
-			<div class="vfo-display">
-				<input class="vfo-freq-input" type="text" v-model="vfoDisplayFreq" @blur="applyVfoFreq" @keyup.enter="applyVfoFreq" @focus="focusVfoFreq">
-				<div class="vfo-unit">MHz</div>
+			<div class="vfo-displays">
+				<div class="vfo-display"
+					v-for="(vfo, i) in vfos" :key="'vfo-disp-' + i"
+					:class="{ 'vfo-active': activeVfoIndex === i }"
+					@click="activeVfoIndex = i"
+					:style="activeVfoIndex === i ? { borderColor: vfoColor(i) } : {}"
+					:title="'Click to tune VFO ' + (i + 1)">
+					<span class="vfo-label" :style="{ background: vfoColor(i) }">{{ i + 1 }}</span>
+					<input class="vfo-freq-input" type="text"
+						v-model="vfo.displayFreq"
+						@blur="applyVfoFreq($event, i)"
+						@keyup.enter="applyVfoFreq($event, i)"
+						@focus="focusVfoFreq(i)">
+					<div class="vfo-unit">MHz</div>
+				</div>
 			</div>
 			<div class="top-controls">
 				<button class="icon-btn" @click="togglePlay" :class="{ active: running }" :disabled="!connected">
@@ -87,48 +99,49 @@
 					</div>
 				</div>
 
-				<div class="panel" :class="{ disabled: !connected }">
+				<div class="panel" v-for="(vfo, i) in vfos" :key="'vfo-panel-' + i" :class="{ disabled: !connected }">
 					<div class="panel-header" style="display: flex; justify-content: space-between; align-items: center;">
-						<div>Radio</div>
-						<label class="custom-checkbox header-checkbox">
-							<input type="checkbox" v-model="audio.enabled" @change="toggleAudioCheckbox" :disabled="!running">
-							<span class="checkmark"></span>
-						</label>
+						<div style="display: flex; align-items: center; gap: 6px;">
+							<span class="vfo-dot" :style="{ background: vfoColor(i) }"></span>
+							VFO {{ i + 1 }}
+						</div>
+						<div style="display: flex; align-items: center; gap: 4px;">
+							<button v-if="vfos.length > 1" class="vfo-remove-btn" @click="removeVfo(i)" title="Remove VFO">&times;</button>
+							<label class="custom-checkbox header-checkbox">
+								<input type="checkbox" v-model="vfo.enabled" @change="toggleVfoCheckbox(i)" :disabled="!running">
+								<span class="checkmark"></span>
+							</label>
+						</div>
 					</div>
 					<div class="panel-body panel-condensed">
 						<div class="mode-grid">
-							<label class="mode-radio"><input type="radio" value="nfm" v-model="audio.mode"><span class="mode-btn">NFM</span></label>
-							<label class="mode-radio"><input type="radio" value="am" v-model="audio.mode"><span class="mode-btn">AM</span></label>
-							<label class="mode-radio"><input type="radio" value="usb" v-model="audio.mode"><span class="mode-btn">USB</span></label>
-							<label class="mode-radio"><input type="radio" value="lsb" v-model="audio.mode"><span class="mode-btn">LSB</span></label>
-							<label class="mode-radio"><input type="radio" value="wfm" v-model="audio.mode"><span class="mode-btn">WFM</span></label>
-							<label class="mode-radio"><input type="radio" value="dsb" v-model="audio.mode"><span class="mode-btn">DSB</span></label>
-							<label class="mode-radio"><input type="radio" value="cw" v-model="audio.mode"><span class="mode-btn">CW</span></label>
-							<label class="mode-radio"><input type="radio" value="raw" v-model="audio.mode"><span class="mode-btn">RAW</span></label>
+							<label class="mode-radio" v-for="m in ['nfm','am','usb','lsb','wfm','dsb','cw','raw']" :key="m">
+								<input type="radio" :value="m" v-model="vfo.mode" :name="'mode-' + i" @change="applyModeDefaults(i)">
+								<span class="mode-btn">{{ m.toUpperCase() }}</span>
+							</label>
 						</div>
 						
 						<div class="form-row">
 							<label style="flex: 0 0 90px;">Bandwidth</label>
 							<div class="spin-group">
-								<input type="number" v-model.number="audio.bandwidth" step="1000" :disabled="audio.mode === 'raw'">
-								<button @click="audio.bandwidth -= 1000" :disabled="audio.mode === 'raw'">-</button>
-								<button @click="audio.bandwidth += 1000" :disabled="audio.mode === 'raw'">+</button>
+								<input type="number" v-model.number="vfo.bandwidth" step="1000" :disabled="vfo.mode === 'raw'">
+								<button @click="vfo.bandwidth -= 1000" :disabled="vfo.mode === 'raw'">-</button>
+								<button @click="vfo.bandwidth += 1000" :disabled="vfo.mode === 'raw'">+</button>
 							</div>
 						</div>
 						
 						<div class="form-row">
 							<label style="flex: 0 0 90px;">Snap Interval</label>
 							<div class="spin-group">
-								<input type="number" v-model.number="audio.snapInterval" step="1000">
-								<button @click="audio.snapInterval -= 1000">-</button>
-								<button @click="audio.snapInterval += 1000">+</button>
+								<input type="number" v-model.number="vfo.snapInterval" step="1000">
+								<button @click="vfo.snapInterval -= 1000">-</button>
+								<button @click="vfo.snapInterval += 1000">+</button>
 							</div>
 						</div>
 
-						<!-- De-emphasis: only shown for NFM and WFM (SDR++ deempAllowed) -->
-						<div class="form-row" v-if="audio.mode === 'wfm' || audio.mode === 'nfm'">
+						<div class="form-row" v-if="vfo.mode === 'wfm' || vfo.mode === 'nfm'">
 							<label style="flex: 0 0 90px;">De-emphasis</label>
-							<select v-model="audio.deEmphasis" style="width: 130px; margin-left: auto;">
+							<select v-model="vfo.deEmphasis" style="width: 130px; margin-left: auto;">
 								<option value="none">None</option>
 								<option value="22us">22us</option>
 								<option value="50us">50us</option>
@@ -138,69 +151,70 @@
 
 						<div class="form-row squelch-row">
 							<label class="custom-checkbox">
-								<input type="checkbox" v-model="audio.squelchEnabled">
+								<input type="checkbox" v-model="vfo.squelchEnabled">
 								<span class="checkmark"></span>
 								Squelch
 							</label>
 							<div class="slider-group compact-slider" style="margin-left: 8px;">
-								<input type="range" v-model.number="audio.squelchLevel" min="-100" max="0" step="0.1" :disabled="!audio.squelchEnabled">
-								<span class="val">{{ audio.squelchLevel.toFixed(3) }}dB</span>
+								<input type="range" v-model.number="vfo.squelchLevel" min="-100" max="0" step="0.1" :disabled="!vfo.squelchEnabled">
+								<span class="val">{{ vfo.squelchLevel.toFixed(3) }}dB</span>
 							</div>
 						</div>
 
-						<!-- IF Noise Reduction: only for NFM and WFM (SDR++ FMIFNRAllowed) -->
-						<div class="form-row full-checkbox-row" v-if="audio.mode === 'nfm' || audio.mode === 'wfm'">
+						<div class="form-row full-checkbox-row" v-if="vfo.mode === 'nfm' || vfo.mode === 'wfm'">
 							<label class="custom-checkbox">
-								<input type="checkbox" v-model="audio.noiseReduction">
+								<input type="checkbox" v-model="vfo.noiseReduction">
 								<span class="checkmark"></span>
 								IF Noise Reduction
 							</label>
 						</div>
 
-						<!-- Stereo: only for WFM (SDR++ broadcast_fm.h stereo) -->
-						<div class="form-row full-checkbox-row" v-if="audio.mode === 'wfm'">
+						<div class="form-row full-checkbox-row" v-if="vfo.mode === 'wfm'">
 							<label class="custom-checkbox">
-								<input type="checkbox" v-model="audio.stereo">
+								<input type="checkbox" v-model="vfo.stereo">
 								<span class="checkmark"></span>
 								Stereo
 							</label>
 						</div>
 
-						<!-- Low Pass: only for NFM and WFM (SDR++ fm.h / broadcast_fm.h) -->
-						<div class="form-row full-checkbox-row" v-if="audio.mode === 'nfm' || audio.mode === 'wfm'">
+						<div class="form-row full-checkbox-row" v-if="vfo.mode === 'nfm' || vfo.mode === 'wfm'">
 							<label class="custom-checkbox">
-								<input type="checkbox" v-model="audio.lowPass">
+								<input type="checkbox" v-model="vfo.lowPass">
 								<span class="checkmark"></span>
 								Low Pass
 							</label>
 						</div>
 
-						<!-- Decode RDS: only for WFM (SDR++ wfm.h) -->
-						<div class="form-row full-checkbox-row" v-if="audio.mode === 'wfm'">
+						<div class="form-row full-checkbox-row" v-if="vfo.mode === 'wfm'">
 							<label class="custom-checkbox">
-								<input type="checkbox" v-model="audio.rds">
+								<input type="checkbox" v-model="vfo.rds">
 								<span class="checkmark"></span>
 								Decode RDS
 							</label>
 						</div>
 
-						<!-- Advanced RDS Info / Region: only for WFM when RDS enabled -->
-						<div class="form-row" v-if="audio.mode === 'wfm' && audio.rds" style="align-items: center;">
+						<div class="form-row" v-if="vfo.mode === 'wfm' && vfo.rds" style="align-items: center;">
 							<label style="flex: 0 0 120px; opacity: 0.7;">Advanced RDS Info</label>
-							<select v-model="audio.rdsRegion" style="width: 130px; margin-left: auto;">
+							<select v-model="vfo.rdsRegion" style="width: 130px; margin-left: auto;">
 								<option value="eu">Europe</option>
 								<option value="na">North America</option>
 							</select>
 						</div>
 						
-						<!-- Keeping Volume for now, since it wasn't explicitly said to be removed, but placing at bottom -->
 						<div class="form-row">
 							<label>Volume</label>
 							<div class="slider-group">
-								<input type="range" v-model.number="audio.volume" min="0" max="100" step="1">
-								<span class="val">{{ audio.volume }}%</span>
+								<input type="range" v-model.number="vfo.volume" min="0" max="100" step="1">
+								<span class="val">{{ vfo.volume }}%</span>
 							</div>
 						</div>
+					</div>
+				</div>
+
+				<!-- Add VFO button -->
+				<div class="panel" :class="{ disabled: !connected }">
+					<div class="panel-body" style="padding: 8px 12px;">
+						<button class="btn btn-primary" @click="addVfo">+ Add VFO</button>
 					</div>
 				</div>
 			</div>

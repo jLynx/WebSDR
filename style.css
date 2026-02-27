@@ -54,19 +54,73 @@ body {
 	color: #fff;
 }
 
+.vfo-displays {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	margin-right: auto;
+	overflow-x: auto;
+	flex-shrink: 1;
+	min-width: 0;
+}
+
 .vfo-display {
 	display: flex;
 	align-items: baseline;
 	background: #000;
-	padding: 4px 16px;
+	padding: 4px 12px;
 	border-radius: 4px;
-	border: 1px solid #444;
-	margin-right: auto;
+	border: 2px solid #444;
+	cursor: pointer;
+	transition: border-color 0.15s;
+}
+
+.vfo-display.vfo-active {
+	border-color: #aaa;
+}
+
+.vfo-label {
+	font-size: 11px;
+	font-weight: 600;
+	margin-right: 6px;
+	padding: 1px 5px;
+	border-radius: 3px;
+	align-self: center;
+	color: #fff;
+}
+
+.vfo-dot {
+	display: inline-block;
+	width: 8px;
+	height: 8px;
+	border-radius: 50%;
+}
+
+.vfo-remove-btn {
+	background: transparent;
+	border: 1px solid #555;
+	color: #aaa;
+	width: 18px;
+	height: 18px;
+	border-radius: 3px;
+	cursor: pointer;
+	font-size: 14px;
+	line-height: 1;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	padding: 0;
+	transition: all 0.15s;
+}
+.vfo-remove-btn:hover {
+	background: #ff4444;
+	border-color: #ff4444;
+	color: #fff;
 }
 
 .vfo-freq-input {
 	font-family: 'Roboto Mono', monospace;
-	font-size: 24px;
+	font-size: 20px;
 	font-weight: bold;
 	color: #e0e0e0;
 	letter-spacing: 2px;
@@ -74,7 +128,7 @@ body {
 	border: none;
 	outline: none;
 	text-align: right;
-	width: 170px;
+	width: 140px;
 }
 .vfo-freq-input:focus {
 	color: #00ffea;
