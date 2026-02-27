@@ -2,8 +2,6 @@
 
 A browser-based spectrum analyzer for [HackRF](https://greatscottgadgets.com/hackrf/), built with WebUSB, WebAssembly (Rust), and WebGL.
 
-<img src="./doc/screenshot.avif">
-
 ## How It Works
 
 1. **WebUSB** — communicates directly with the HackRF device from the browser.

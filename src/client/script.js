@@ -1,5 +1,5 @@
-import { createApp } from "./node_modules/vue/dist/vue.esm-browser.js";
-import * as Comlink from "./node_modules/comlink/dist/esm/comlink.mjs";
+import { createApp } from "./lib/vue.esm-browser.js";
+import * as Comlink from "./lib/comlink.mjs";
 import { HackRF } from "./hackrf.js";
 import { Waterfall, WaterfallGL } from "./utils.js";
 

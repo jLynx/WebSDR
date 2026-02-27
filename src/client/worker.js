@@ -1,4 +1,5 @@
 /*
+Copyright (c) 2026, jLynx <https://github.com/jLynx>
 Copyright (c) 2019, cho45 <cho45@lowreal.net>
 
 All rights reserved.
@@ -18,7 +19,7 @@ HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABI
 ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 */
 
-import * as Comlink from "./node_modules/comlink/dist/esm/comlink.mjs";
+import * as Comlink from "./lib/comlink.mjs";
 import { HackRF } from "./hackrf.js";
 import init, { FFT, DspProcessor, set_panic_hook } from "./hackrf-web/pkg/hackrf_web.js";
 

@@ -1,15 +1,21 @@
 {
-  "name": "hackrf",
-  "version": "1.0.0",
-  "main": "script.js",
-  "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
-  },
-  "author": "jLynx (https://jlynx.net/)",
-  "license": "GPL",
-  "description": "",
-  "dependencies": {
-    "comlink": "^4.4.2",
-    "vue": "^3.5.29"
-  }
+	"name": "web-sdr",
+	"version": "0.0.0",
+	"private": true,
+	"scripts": {
+		"build": "node build.js",
+		"deploy": "npm run build && wrangler deploy",
+		"dev": "npm run build && wrangler dev",
+		"start": "npm run build && wrangler dev",
+		"test": "vitest"
+	},
+	"dependencies": {
+		"comlink": "^4.4.2",
+		"vue": "^3.5.29"
+	},
+	"devDependencies": {
+		"@cloudflare/vitest-pool-workers": "^0.12.4",
+		"vitest": "~3.2.0",
+		"wrangler": "^4.69.0"
+	}
 }

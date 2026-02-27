@@ -5,6 +5,7 @@ Copyright (c) 2013, Benjamin Vernoux <titanmkd@gmail.com>
 Copyright (c) 2013, Michael Ossmann <mike@ossmann.com>
 
 This JavaScript impl:
+Copyright (c) 2026, jLynx <https://github.com/jLynx>
 Copyright (c) 2019, cho45 <cho45@lowreal.net>
 
 All rights reserved.
