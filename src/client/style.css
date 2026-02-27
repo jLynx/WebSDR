@@ -616,6 +616,19 @@ canvas {
 .transcript-badge.error {
 	background: #c62828;
 }
+.transcript-badge.recording {
+	background: #c62828;
+	animation: pulse-rec 1s ease-in-out infinite;
+}
+.transcript-badge.transcribing {
+	background: #1565c0;
+	animation: pulse-rec 1.2s ease-in-out infinite;
+}
+
+@keyframes pulse-rec {
+	0%, 100% { opacity: 1; }
+	50% { opacity: 0.5; }
+}
 
 .transcript-controls {
 	display: flex;
@@ -678,6 +691,12 @@ canvas {
 
 .transcript-freq {
 	color: var(--accent);
+	flex-shrink: 0;
+	font-size: 11px;
+}
+
+.transcript-duration {
+	color: var(--text-muted);
 	flex-shrink: 0;
 	font-size: 11px;
 }

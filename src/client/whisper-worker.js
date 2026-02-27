@@ -61,7 +61,7 @@ async function loadModel(model) {
 // Common Whisper hallucinations on silence / noise
 const HALLUCINATION_RE = /^\s*(you|a)\s*[.!?,]*\s*$/i;
 
-async function transcribe(audio, id) {
+async function transcribe(audio, id, audioDuration) {
 	if (!pipeline) {
 		self.postMessage({ type: 'error', message: 'Model not loaded yet.' });
 		return;
@@ -86,7 +86,7 @@ async function transcribe(audio, id) {
 			return; // discard — not real speech
 		}
 
-		self.postMessage({ type: 'result', text, id });
+		self.postMessage({ type: 'result', text, id, audioDuration });
 	} catch (err) {
 		self.postMessage({ type: 'error', message: `Transcription error: ${err.message}` });
 	}
@@ -101,7 +101,7 @@ self.addEventListener('message', (e) => {
 		// Ensure model is loaded first
 		const run = async () => {
 			if (pipelinePromise) await pipelinePromise;
-			await transcribe(e.data.audio, e.data.id);
+			await transcribe(e.data.audio, e.data.id, e.data.audioDuration);
 		};
 		run();
 	}

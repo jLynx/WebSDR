@@ -81,8 +81,13 @@ createApp({
 				loadProgress: 0,
 				model: 'onnx-community/whisper-tiny.en',
 				chunkSeconds: 5,
-				log: [],               // { time, freq, text }
+				log: [],               // { time, freq, text, duration }
 				statusMsg: '',
+				recording: false,      // true while accumulating audio
+				transcribing: false,   // true while waiting for Whisper result
+				recordStart: null,     // Date when current recording started
+				recordDuration: 0,     // seconds of current recording buffer
+				pendingChunks: 0,      // number of chunks sent but not yet returned
 			}
 		};
 	},
@@ -578,6 +583,10 @@ createApp({
 		},
 		stopWhisper() {
 			this.whisper.active = false;
+			this.whisper.recording = false;
+			this.whisper.transcribing = false;
+			this.whisper.pendingChunks = 0;
+			this.whisper.recordDuration = 0;
 			this._whisperBuf = [];
 			this._whisperBufLen = 0;
 		},
@@ -596,13 +605,19 @@ createApp({
 					break;
 				case 'result': {
 					const text = msg.text;
+					// Track pending count
+					this.whisper.pendingChunks = Math.max(0, this.whisper.pendingChunks - 1);
+					if (this.whisper.pendingChunks === 0) {
+						this.whisper.transcribing = false;
+					}
 					// Ignore blank / noise-only results
 					if (!text || /^\s*$/.test(text) || /^\(.*\)$/.test(text) || /^\[.*\]$/.test(text)) break;
 					const now = new Date();
 					const time = now.toLocaleTimeString();
 					const vfo = this.vfos[this.activeVfoIndex];
 					const freq = vfo ? this.formatFreq(vfo.freq) + ' MHz' : '';
-					this.whisper.log.push({ time, freq, text });
+					const duration = msg.audioDuration ? msg.audioDuration.toFixed(1) + 's' : '';
+					this.whisper.log.push({ time, freq, text, duration });
 					// Auto-scroll
 					this.$nextTick(() => {
 						const el = this.$refs.transcriptBody;
@@ -643,9 +658,14 @@ createApp({
 				// ── Squelch-aware mode: accumulate entire transmission ──
 				if (!isSilent) {
 					// Audio is active — accumulate
+					if (!this.whisper.recording) {
+						this.whisper.recording = true;
+						this.whisper.recordStart = new Date();
+					}
 					this._whisperBuf.push(down);
 					this._whisperBufLen += down.length;
 					this._whisperSilenceRun = 0;
+					this.whisper.recordDuration = this._whisperBufLen / 16000;
 
 					// Safety cap: if transmission exceeds 120s at 16 kHz, flush now
 					const MAX_CAP = 16000 * 120;
@@ -669,8 +689,13 @@ createApp({
 				// ── Fixed-interval mode (no squelch): use chunkSeconds selector ──
 				if (isSilent) return; // still skip pure silence
 
+				if (!this.whisper.recording) {
+					this.whisper.recording = true;
+					this.whisper.recordStart = new Date();
+				}
 				this._whisperBuf.push(down);
 				this._whisperBufLen += down.length;
+				this.whisper.recordDuration = this._whisperBufLen / 16000;
 
 				const TARGET = 16000 * this.whisper.chunkSeconds;
 				if (this._whisperBufLen >= TARGET) {
@@ -682,6 +707,8 @@ createApp({
 		_flushWhisperBuf() {
 			if (this._whisperBufLen === 0) return;
 
+			const audioDuration = this._whisperBufLen / 16000;
+
 			const full = new Float32Array(this._whisperBufLen);
 			let offset = 0;
 			for (const chunk of this._whisperBuf) {
@@ -692,15 +719,22 @@ createApp({
 			this._whisperBufLen = 0;
 			this._whisperSilenceRun = 0;
 
+			// Update state: no longer recording, now transcribing
+			this.whisper.recording = false;
+			this.whisper.recordDuration = 0;
+
 			// Final RMS check on the entire buffer
 			let sumSq = 0;
 			for (let i = 0; i < full.length; i++) sumSq += full[i] * full[i];
 			const rms = Math.sqrt(sumSq / full.length);
 			if (rms < 0.003) return; // discard if overall energy is negligible
 
+			this.whisper.transcribing = true;
+			this.whisper.pendingChunks++;
+
 			const id = this._whisperChunkId++;
 			this._whisperWorker.postMessage(
-				{ type: 'transcribe', audio: full, id },
+				{ type: 'transcribe', audio: full, id, audioDuration },
 				[full.buffer]   // transfer
 			);
 		},
