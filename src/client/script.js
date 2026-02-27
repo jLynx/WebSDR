@@ -73,6 +73,16 @@ createApp({
 			view: {
 				zoomScale: 1.0,
 				zoomOffset: 0.0
+			},
+			whisper: {
+				panelOpen: false,
+				active: false,
+				status: 'idle',        // idle | loading | ready | error
+				loadProgress: 0,
+				model: 'onnx-community/whisper-tiny.en',
+				chunkSeconds: 5,
+				log: [],               // { time, freq, text }
+				statusMsg: '',
 			}
 		};
 	},
@@ -417,6 +427,11 @@ createApp({
 
 			if (!floats.length) return;
 
+			// Feed audio to Whisper transcription pipeline
+			if (this.whisper.active) {
+				this._feedWhisper(floats);
+			}
+
 			// Accumulate into ring buffer, schedule when we have enough
 			// This batches tiny chunks (~786 samples) into larger buffers
 			// to prevent scheduling gaps on the main thread
@@ -525,6 +540,129 @@ createApp({
 			if (this.waterfallEngine) {
 				this.waterfallEngine.setZoom(this.view.zoomOffset, this.view.zoomScale);
 			}
+		},
+		// ─── Whisper transcription ───────────────────────────
+		toggleTranscriptPanel() {
+			this.whisper.panelOpen = !this.whisper.panelOpen;
+		},
+		async toggleWhisper() {
+			if (this.whisper.active) {
+				this.stopWhisper();
+			} else {
+				await this.startWhisper();
+			}
+		},
+		async startWhisper() {
+			if (!this.running) {
+				this.showMsg('Start the SDR stream first.');
+				return;
+			}
+
+			// Create worker if not yet alive
+			if (!this._whisperWorker) {
+				this._whisperWorker = new Worker('./whisper-worker.js', { type: 'module' });
+				this._whisperWorker.addEventListener('message', (e) => this._onWhisperMessage(e));
+			}
+
+			// Load model
+			this.whisper.status = 'loading';
+			this.whisper.loadProgress = 0;
+			this._whisperWorker.postMessage({ type: 'load', model: this.whisper.model });
+
+			// Prepare audio accumulation buffer (16 kHz mono)
+			this._whisperBuf = [];
+			this._whisperBufLen = 0;
+			this._whisperChunkId = 0;
+			this.whisper.active = true;
+		},
+		stopWhisper() {
+			this.whisper.active = false;
+			this._whisperBuf = [];
+			this._whisperBufLen = 0;
+		},
+		_onWhisperMessage(e) {
+			const msg = e.data;
+			switch (msg.type) {
+				case 'status':
+					this.whisper.statusMsg = msg.message;
+					break;
+				case 'loading':
+					this.whisper.loadProgress = msg.progress;
+					break;
+				case 'ready':
+					this.whisper.status = 'ready';
+					this.showMsg('Whisper model loaded — transcription active.');
+					break;
+				case 'result': {
+					const text = msg.text;
+					// Ignore blank / noise-only results
+					if (!text || /^\s*$/.test(text) || /^\(.*\)$/.test(text) || /^\[.*\]$/.test(text)) break;
+					const now = new Date();
+					const time = now.toLocaleTimeString();
+					const vfo = this.vfos[this.activeVfoIndex];
+					const freq = vfo ? this.formatFreq(vfo.freq) + ' MHz' : '';
+					this.whisper.log.push({ time, freq, text });
+					// Auto-scroll
+					this.$nextTick(() => {
+						const el = this.$refs.transcriptBody;
+						if (el) el.scrollTop = el.scrollHeight;
+					});
+					break;
+				}
+				case 'error':
+					this.whisper.status = 'error';
+					this.whisper.statusMsg = msg.message;
+					this.showMsg('Whisper: ' + msg.message);
+					break;
+			}
+		},
+		/** Feed demodulated audio (48 kHz) into the Whisper accumulation buffer. */
+		_feedWhisper(samples48k) {
+			if (!this.whisper.active || this.whisper.status !== 'ready') return;
+
+			// Down-sample 48 kHz → 16 kHz (simple 3:1 decimation)
+			const ratio = 3;
+			const outLen = Math.floor(samples48k.length / ratio);
+			const down = new Float32Array(outLen);
+			for (let i = 0; i < outLen; i++) {
+				down[i] = samples48k[i * ratio];
+			}
+
+			this._whisperBuf.push(down);
+			this._whisperBufLen += down.length;
+
+			const TARGET = 16000 * this.whisper.chunkSeconds;
+			if (this._whisperBufLen >= TARGET) {
+				// Concat accumulated chunks
+				const full = new Float32Array(this._whisperBufLen);
+				let offset = 0;
+				for (const chunk of this._whisperBuf) {
+					full.set(chunk, offset);
+					offset += chunk.length;
+				}
+				this._whisperBuf = [];
+				this._whisperBufLen = 0;
+
+				// Send to worker
+				const id = this._whisperChunkId++;
+				this._whisperWorker.postMessage(
+					{ type: 'transcribe', audio: full, id },
+					[full.buffer]   // transfer
+				);
+			}
+		},
+		clearTranscript() {
+			this.whisper.log = [];
+		},
+		exportTranscript() {
+			const lines = this.whisper.log.map(e => `[${e.time}] ${e.freq}  ${e.text}`);
+			const blob = new Blob([lines.join('\n')], { type: 'text/plain' });
+			const url = URL.createObjectURL(blob);
+			const a = document.createElement('a');
+			a.href = url;
+			a.download = `transcript-${new Date().toISOString().slice(0, 19).replace(/:/g, '-')}.txt`;
+			a.click();
+			URL.revokeObjectURL(url);
 		},
 		handleWheelZoom(e, rect) {
 			e.preventDefault();
