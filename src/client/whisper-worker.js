@@ -33,6 +33,9 @@ async function loadModel(model) {
 		// Disable local model check — always fetch from HF Hub via CDN
 		env.allowLocalModels = false;
 
+		// Route model downloads through our Worker proxy to avoid CORS issues
+		env.remoteHost = `${self.location.origin}/hf-proxy`;
+
 		// English-only models (.en) reject language/task parameters
 		isMultilingual = !model.endsWith('.en');
 
