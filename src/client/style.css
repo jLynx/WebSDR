@@ -40,7 +40,7 @@ body {
 .top-bar {
 	display: flex;
 	align-items: center;
-	height: 50px;
+	height: 60px;
 	background-color: var(--bg-header);
 	border-bottom: 1px solid var(--border);
 	padding: 0 16px;
@@ -62,9 +62,12 @@ body {
 	overflow-x: auto;
 	flex-shrink: 1;
 	min-width: 0;
+	padding-top: 14px;
+	padding-bottom: 14px;
 }
 
 .vfo-display {
+	position: relative;
 	display: flex;
 	align-items: baseline;
 	background: #000;
@@ -73,6 +76,22 @@ body {
 	border: 2px solid #444;
 	cursor: pointer;
 	transition: border-color 0.15s;
+}
+
+.vfo-bookmark-label {
+	position: absolute;
+	top: calc(100% + 2px);
+	left: 0;
+	right: 0;
+	font-size: 8px;
+	font-weight: 400;
+	color: #aaa;
+	text-align: center;
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	letter-spacing: 0.2px;
+	pointer-events: none;
 }
 
 .vfo-display.vfo-active {
@@ -87,6 +106,24 @@ body {
 
 .vfo-display.vfo-squelch-open {
 	animation: vfo-squelch-pulse 0.8s ease-in-out infinite;
+}
+
+.vfo-display.vfo-audio-off .vfo-freq-input,
+.vfo-display.vfo-audio-off .vfo-unit {
+	opacity: 0.35;
+}
+
+.vfo-mute-badge {
+	font-size: 9px;
+	font-weight: 700;
+	letter-spacing: 0.5px;
+	color: #fff;
+	background: #666;
+	padding: 1px 4px;
+	border-radius: 3px;
+	align-self: center;
+	margin-left: 5px;
+	opacity: 0.85;
 }
 
 .vfo-rx-badge {

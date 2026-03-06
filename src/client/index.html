@@ -19,7 +19,7 @@
 			<div class="vfo-displays">
 				<div class="vfo-display"
 					v-for="(vfo, i) in vfos" :key="'vfo-disp-' + i"
-					:class="{ 'vfo-active': activeVfoIndex === i, 'vfo-squelch-open': vfo.squelchEnabled && vfoSquelchOpen[i] }"
+					:class="{ 'vfo-active': activeVfoIndex === i, 'vfo-squelch-open': vfo.squelchEnabled && vfoSquelchOpen[i], 'vfo-audio-off': !vfo.enabled }"
 					@click="activeVfoIndex = i"
 					:style="Object.assign(
 						(activeVfoIndex === i || (vfo.squelchEnabled && vfoSquelchOpen[i])) ? { borderColor: vfoColor(i) } : {},
@@ -34,6 +34,8 @@
 						@focus="focusVfoFreq(i)">
 					<div class="vfo-unit">MHz</div>
 					<span class="vfo-rx-badge" v-if="vfo.squelchEnabled && vfoSquelchOpen[i]" :style="{ background: vfoColor(i) }" title="Squelch open – receiving">RX</span>
+					<span class="vfo-mute-badge" v-if="!vfo.enabled" title="Audio disabled">MUTE</span>
+					<span class="vfo-bookmark-label" v-if="vfoBookmarkLabel(i)" :title="vfoBookmarkLabel(i)">{{ vfoBookmarkLabel(i) }}</span>
 				</div>
 			</div>
 			<div class="top-controls">

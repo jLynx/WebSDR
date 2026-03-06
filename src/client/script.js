@@ -150,6 +150,22 @@ createApp({
 			const b = parseInt(hex.slice(5, 7), 16);
 			return `rgba(${r}, ${g}, ${b}, 0.25)`;
 		},
+		// Returns the bookmark name if the VFO's frequency matches any saved bookmark.
+		vfoBookmarkLabel(i) {
+			const vfoFreq = this.vfos[i]?.freq;
+			if (vfoFreq == null) return null;
+			const TOL = 0.0001; // ~100 Hz tolerance
+			for (const bm of this.bookmarks) {
+				if ((bm.type || 'group') === 'individual') {
+					if (Math.abs(bm.freq - vfoFreq) < TOL) return bm.name;
+				} else {
+					// Group bookmark: check if any of its VFOs match
+					if (bm.vfos && bm.vfos.some(v => Math.abs((v.freq ?? 0) - vfoFreq) < TOL))
+						return bm.name;
+				}
+			}
+			return null;
+		},
 		focusVfoFreq(index) {
 			this.vfos[index].focused = true;
 		},
