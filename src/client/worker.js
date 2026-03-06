@@ -380,6 +380,8 @@ class Worker {
 			lastBandwidth: initialBandwidth,
 			// Track last mode to detect mode switches
 			lastMode: '',
+			// Squelch activity: true when squelch is enabled AND signal is above threshold
+			squelchOpen: false,
 		});
 		this.vfoStates = [makeVfoState()];
 
@@ -518,10 +520,21 @@ class Worker {
 				perf.audioCalls++;
 				perf.dspTimeSum += elapsed;
 				if (elapsed > perf.dspTimeMax) perf.dspTimeMax = elapsed;
-				if (numAudioSamples === 0) { perf.droppedChunks++; return null; }
+				if (numAudioSamples === 0) { perf.droppedChunks++; vfoState.squelchOpen = false; return null; }
 				perf.audioSamplesOut += numAudioSamples;
 
 				let result = new Float32Array(ddcOut.subarray(0, numAudioSamples));
+
+				// Detect if Rust squelch is blocking: output is all zeros when closed.
+				// Sample a handful of values to check for actual audio energy.
+				if (params.squelchEnabled) {
+					let sumSq = 0;
+					const checkLen = Math.min(result.length, 256);
+					for (let i = 0; i < checkLen; i++) sumSq += result[i] * result[i];
+					vfoState.squelchOpen = sumSq > 1e-10;
+				} else {
+					vfoState.squelchOpen = false;
+				}
 
 				// ── De-emphasis (SDR++ filter/deephasis.h) ────────────────
 				if (params.deEmphasis !== 'none') {
@@ -564,10 +577,13 @@ class Worker {
 				const squelchDb = 10 * Math.log10(squelchMag + 1e-12);
 
 				if (params.squelchEnabled && squelchDb < params.squelchLevel) {
+					vfoState.squelchOpen = false;
 					const zeros = new Float32Array(numDemodSamples);
 					const result = vfoState.audioResampler.process(zeros);
 					return result.length > 0 ? result : null;
 				}
+				// Signal is above squelch threshold — mark as receiving
+				vfoState.squelchOpen = params.squelchEnabled && squelchDb >= params.squelchLevel;
 
 				const audioDemodRateSamples = new Float32Array(numDemodSamples);
 				const ifRate = vfoState.currentIfRate;
@@ -734,7 +750,11 @@ class Worker {
 	}
 
 	getDspStats() {
-		return this._perf ? this._perf.report : null;
+		if (!this._perf) return null;
+		return {
+			...this._perf.report,
+			squelchOpen: this.vfoStates ? this.vfoStates.map(s => s.squelchOpen || false) : [],
+		};
 	}
 
 	setVfoParams(index, params) {

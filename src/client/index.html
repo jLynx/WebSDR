@@ -19,9 +19,12 @@
 			<div class="vfo-displays">
 				<div class="vfo-display"
 					v-for="(vfo, i) in vfos" :key="'vfo-disp-' + i"
-					:class="{ 'vfo-active': activeVfoIndex === i }"
+					:class="{ 'vfo-active': activeVfoIndex === i, 'vfo-squelch-open': vfo.squelchEnabled && vfoSquelchOpen[i] }"
 					@click="activeVfoIndex = i"
-					:style="activeVfoIndex === i ? { borderColor: vfoColor(i) } : {}"
+					:style="Object.assign(
+						(activeVfoIndex === i || (vfo.squelchEnabled && vfoSquelchOpen[i])) ? { borderColor: vfoColor(i) } : {},
+						vfo.squelchEnabled && vfoSquelchOpen[i] ? { '--sq-color': vfoColor(i) } : {}
+					)"
 					:title="'Click to tune VFO ' + (i + 1)">
 					<span class="vfo-label" :style="{ background: vfoColor(i) }">{{ i + 1 }}</span>
 					<input class="vfo-freq-input" type="text"
@@ -30,6 +33,7 @@
 						@keyup.enter="applyVfoFreq($event, i)"
 						@focus="focusVfoFreq(i)">
 					<div class="vfo-unit">MHz</div>
+					<span class="vfo-rx-badge" v-if="vfo.squelchEnabled && vfoSquelchOpen[i]" :style="{ background: vfoColor(i) }" title="Squelch open – receiving">RX</span>
 				</div>
 			</div>
 			<div class="top-controls">

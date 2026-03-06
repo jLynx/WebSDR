@@ -70,6 +70,7 @@ createApp({
 			hoverFreqText: "",
 			dspStats: null,
 			showStats: false,
+			vfoSquelchOpen: [],  // per-VFO squelch activity indicator
 			view: {
 				zoomScale: 1.0,
 				zoomOffset: 0.0
@@ -273,6 +274,9 @@ createApp({
 			this._statsTimer = setInterval(async () => {
 				if (this.backend && this.running) {
 					this.dspStats = await this.backend.getDspStats();
+					if (this.dspStats && this.dspStats.squelchOpen) {
+						this.vfoSquelchOpen = this.dspStats.squelchOpen.slice();
+					}
 				}
 			}, 500);
 
