@@ -614,7 +614,13 @@ createApp({
 				const json = localStorage.getItem('sdr-web-setting');
 				if (json) {
 					const setting = JSON.parse(json);
-					if (setting.radio) Object.assign(this.radio, setting.radio);
+					if (setting.radio) {
+					Object.assign(this.radio, setting.radio);
+					// Migrate: enforce minimum fftSize (old saves may have used 2048)
+					if (!this.radio.fftSize || this.radio.fftSize < 8192) {
+						this.radio.fftSize = 65536;
+					}
+				}
 					if (setting.gains) Object.assign(this.gains, setting.gains);
 					// Handle new format (vfos array) or legacy format (audio/audio2)
 					if (setting.vfos && Array.isArray(setting.vfos)) {
