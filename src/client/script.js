@@ -876,7 +876,7 @@ createApp({
 					volume: bm.volume ?? 50,
 					displayFreq: this.formatFreq(bm.freq),
 					focused: false,
-					enabled: false,
+					enabled: true,
 				});
 				this.showMsg(`Tuned to "${bm.name}" — ${bm.freq} MHz`);
 			} else {
@@ -885,7 +885,7 @@ createApp({
 				this.vfos = bm.vfos.map(v => ({
 					...makeDefaultVfo(),
 					...v,
-					enabled: false,
+					enabled: true,
 					focused: false,
 					displayFreq: this.formatFreq(v.freq || bm.centerFreq),
 				}));
