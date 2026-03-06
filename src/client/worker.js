@@ -24,17 +24,13 @@ import { HackRF } from "./hackrf.js";
 import init, { FFT, DspProcessor, set_panic_hook } from "./hackrf-web/pkg/hackrf_web.js";
 
 // wasm module (top-level import)
-console.log('worker: imported');
-
 let wasmInitialized = false;
 
 async function ensureWasmInitialized() {
 	if (!wasmInitialized) {
-		console.log('worker: loading wasm...');
 		await init();
 		set_panic_hook();
 		wasmInitialized = true;
-		console.log('worker: wasm loaded');
 	}
 }
 
@@ -43,7 +39,6 @@ class Worker {
 	}
 
 	async init() {
-		console.log('init worker');
 		await ensureWasmInitialized();
 	}
 
@@ -70,7 +65,6 @@ class Worker {
 		if (!device) {
 			return false;
 		}
-		console.log(device);
 		this.hackrf = new HackRF();
 		await this.hackrf.open(device);
 		return true;
@@ -87,7 +81,7 @@ class Worker {
 		try {
 			boardRev = await hackrf.boardRevRead();
 		} catch (e) {
-			console.log(e);
+			console.warn('boardRevRead not supported:', e);
 		}
 
 		console.log(`Serial Number: ${serialNo.map((i) => (i + 0x100000000).toString(16).slice(1)).join('')}`)
@@ -102,14 +96,11 @@ class Worker {
 		const { hackrf } = this;
 		const { centerFreq, sampleRate, fftSize, lnaGain, vgaGain, ampEnabled } = opts;
 
-		console.log('startRxStream:', { centerFreq, sampleRate, fftSize });
-
 		await hackrf.setSampleRateManual(sampleRate, 1);
 		await hackrf.setBasebandFilterBandwidth(
 			HackRF.computeBasebandFilterBw(sampleRate)
 		);
 		await hackrf.setFreq(centerFreq * 1e6);
-		console.log('startRxStream: hardware configured, starting RX...');
 
 		// ── Spectrum FFT setup ────────────────────────────────────────
 		const spectrumWindowFunc = (x) => {
@@ -847,6 +838,4 @@ class Worker {
 	}
 }
 
-console.log('worker: before Comlink.expose');
 Comlink.expose(Worker);
-console.log('worker: after Comlink.expose');

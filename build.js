@@ -47,7 +47,7 @@ console.log(`Copied ${srcFiles.length} client files → dist/`);
 fs.mkdirSync(LIB, { recursive: true });
 
 const vendorFiles = [
-	{ src: 'node_modules/vue/dist/vue.esm-browser.js', dest: 'vue.esm-browser.js' },
+	{ src: 'node_modules/vue/dist/vue.esm-browser.prod.js', dest: 'vue.esm-browser.js' },
 	{ src: 'node_modules/comlink/dist/esm/comlink.mjs', dest: 'comlink.mjs' },
 ];
 

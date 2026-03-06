@@ -258,7 +258,6 @@ createApp({
 			this.showMsg("Disconnected");
 		},
 		async togglePlay() {
-			console.log('togglePlay clicked, current running state:', this.running);
 			if (this.running) {
 				await this.backend.stopRx();
 				this.running = false;
@@ -274,7 +273,6 @@ createApp({
 			}
 		},
 		async startStream() {
-			console.log('startStream called, current running state:', this.running);
 			if (this.running) return;
 
 			this.initCanvas();
@@ -288,13 +286,11 @@ createApp({
 				ampEnabled: this.gains.ampEnabled,
 			};
 
-			console.log('Calling backend.startRxStream with opts:', opts);
 			try {
 				await this.backend.startRxStream(opts,
 					Comlink.proxy((spectrumData) => this.drawSpectrum(spectrumData)),
 					Comlink.proxy((audioSamples) => this.playAudio(audioSamples))
 				);
-				console.log('backend.startRxStream returned successfully.');
 			} catch (e) {
 				console.error('Error starting RX stream:', e);
 				this.showMsg("Error starting stream.");
@@ -348,16 +344,6 @@ createApp({
 			fft.style.height = rect.height + 'px';
 			this.fftCtx = fft.getContext('2d');
 			this.fftCtx.scale(dpr, dpr);
-			console.log('[initCanvas]', {
-				devicePixelRatio: dpr,
-				cssWidth: rect.width,
-				cssHeight: rect.height,
-				canvasBufferWidth: fft.width,
-				canvasBufferHeight: fft.height,
-				fftSize,
-				renderSize,
-				useWebGL,
-			});
 		},
 		drawSpectrum(data) {
 			if (!this.running || !this.fftCtx) return;
@@ -385,21 +371,6 @@ createApp({
 			const dpr = window.devicePixelRatio || 1;
 			const w = ctx.canvas.width / dpr;
 			const h = ctx.canvas.height / dpr;
-
-			if (!this._spectrumDebugLogged) {
-				this._spectrumDebugLogged = true;
-				console.log('[drawSpectrum first frame]', {
-					devicePixelRatio: dpr,
-					canvasBufferWidth: ctx.canvas.width,
-					canvasBufferHeight: ctx.canvas.height,
-					cssWidth: w,
-					cssHeight: h,
-					dataPoints: data.length,
-					renderSize: this.renderSize,
-					canvasStyleWidth: ctx.canvas.style.width,
-					canvasStyleHeight: ctx.canvas.style.height,
-				});
-			}
 
 			ctx.fillStyle = "rgba(0, 0, 0, 1)";
 			ctx.fillRect(0, 0, w, h);

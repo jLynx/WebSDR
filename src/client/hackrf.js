@@ -165,7 +165,7 @@ class HackRF {
 			]
 		}).catch(e => null);
 		if (!device) {
-			console.log('no device matched');
+			console.warn('HackRF: no device matched');
 			return;
 		}
 		return device;
@@ -177,35 +177,14 @@ class HackRF {
 			await this.exit();
 		}
 
-		console.log(device);
-		console.log(device.configurations);
-
-		console.log('open device', device);
 		await device.open();
-		console.log('selectConfiguration', HackRF.USB_CONFIG_STANDARD);
 		await device.selectConfiguration(HackRF.USB_CONFIG_STANDARD);
-		console.log('claimInterface');
 		await device.claimInterface(0);
-		console.log('device was opened');
 
 		this.device = device;
 	}
 
 	async readBoardId() {
-		// https://github.com/mossmann/hackrf/blob/master/host/libhackrf/src/hackrf.c#L1058
-		/*
-		 * libusb_control_transfer(
-		 *   libusb_device_handle *devh,
-		 *   uint8_t bmRequestType,
-		 *   uint8_t bRequest,
-		 *   uint16_t wValue,
-		 *   uint16_t wIndex,
-		 *   unsigned char *data,
-		 *   uint16_t wLength,
-		 *   unsigned int timeout
-		 * )
-		 */
-		console.log('readBoardId');
 		const result = await this.device.controlTransferIn({
 			requestType: "vendor",
 			recipient: "device",
@@ -213,7 +192,6 @@ class HackRF {
 			value: 0,
 			index: 0,
 		}, 1);
-		console.log(result);
 		if (result.status !== 'ok') {
 			throw 'failed to readBoardId';
 		}
@@ -221,7 +199,6 @@ class HackRF {
 	}
 
 	async readVersionString() {
-		console.log('readVersionString');
 		const result = await this.device.controlTransferIn({
 			requestType: "vendor",
 			recipient: "device",
@@ -229,7 +206,6 @@ class HackRF {
 			value: 0,
 			index: 0,
 		}, 255);
-		console.log(result);
 		if (result.status !== 'ok') {
 			throw 'failed to readVersionString';
 		}
@@ -249,7 +225,6 @@ class HackRF {
 	}
 
 	async readPartIdSerialNo() {
-		console.log('readPartIdSerialNo');
 		const result = await this.device.controlTransferIn({
 			requestType: "vendor",
 			recipient: "device",
@@ -257,7 +232,6 @@ class HackRF {
 			value: 0,
 			index: 0,
 		}, 24);
-		console.log(result);
 		if (result.status !== 'ok') {
 			throw 'failed to readPartIdSerialNo';
 		}
@@ -288,7 +262,6 @@ class HackRF {
 	}
 
 	async setTransceiverMode(mode) {
-		console.log('setTransceiverMode', mode);
 		const result = await this.device.controlTransferOut({
 			requestType: "vendor",
 			recipient: "device",
@@ -296,7 +269,6 @@ class HackRF {
 			value: mode,
 			index: 0,
 		});
-		console.log(result);
 		if (result.status !== 'ok') {
 			throw 'failed to setTransceiverMode';
 		}
@@ -313,7 +285,6 @@ class HackRF {
 		params.setUint32(0, freqHz, true);
 		params.setUint32(4, divider, true);
 
-		console.log('setSampleRateManual', { freqHz, divider, params });
 		const result = await this.device.controlTransferOut({
 			requestType: "vendor",
 			recipient: "device",
@@ -321,7 +292,6 @@ class HackRF {
 			value: 0,
 			index: 0,
 		}, params.buffer);
-		console.log(result);
 		if (result.status !== 'ok') {
 			throw 'failed to setTransceiverMode';
 		}
@@ -330,7 +300,6 @@ class HackRF {
 	}
 
 	async setBasebandFilterBandwidth(bandwidthHz) {
-		console.log('setBasebandFilterBandwidth', { bandwidthHz });
 		const result = await this.device.controlTransferOut({
 			requestType: "vendor",
 			recipient: "device",
@@ -338,7 +307,6 @@ class HackRF {
 			value: bandwidthHz & 0xffff,
 			index: (bandwidthHz >> 16) & 0xffff,
 		});
-		console.log(result);
 		if (result.status !== 'ok') {
 			throw 'failed to setTransceiverMode';
 		}
@@ -349,7 +317,6 @@ class HackRF {
 			throw "gain must be <= 62";
 		}
 		value &= ~0x01;
-		console.log('setVgaGain', { value });
 		const result = await this.device.controlTransferIn({
 			requestType: "vendor",
 			recipient: "device",
@@ -357,7 +324,6 @@ class HackRF {
 			value: 0,
 			index: value,
 		}, 1);
-		console.log(result);
 		if (result.status !== 'ok' || !result.data.getUint8(0)) {
 			throw 'failed to setVgaGain';
 		}
@@ -368,7 +334,6 @@ class HackRF {
 			throw "gain must be <= 40";
 		}
 		value &= ~0x07;
-		console.log('setLnaGain', { value });
 		const result = await this.device.controlTransferIn({
 			requestType: "vendor",
 			recipient: "device",
@@ -376,14 +341,12 @@ class HackRF {
 			value: 0,
 			index: value,
 		}, 1);
-		console.log(result);
 		if (result.status !== 'ok' || !result.data.getUint8(0)) {
 			throw 'failed to setLnaGain';
 		}
 	}
 
 	async setAmpEnable(value) {
-		console.log('setAmpEnable', { value });
 		const result = await this.device.controlTransferOut({
 			requestType: "vendor",
 			recipient: "device",
@@ -391,14 +354,12 @@ class HackRF {
 			value: value ? 1 : 0,
 			index: 0,
 		});
-		console.log(result);
 		if (result.status !== 'ok') {
 			throw 'failed to setLnaGain';
 		}
 	}
 
 	async setAntennaEnable(value) {
-		console.log('setAntennaEnable', { value });
 		const result = await this.device.controlTransferOut({
 			requestType: "vendor",
 			recipient: "device",
@@ -406,14 +367,12 @@ class HackRF {
 			value: value ? 1 : 0,
 			index: 0,
 		});
-		console.log(result);
 		if (result.status !== 'ok') {
 			throw 'failed to setLnaGain';
 		}
 	}
 
 	async reset() {
-		console.log('reset');
 		const result = await this.device.controlTransferOut({
 			requestType: "vendor",
 			recipient: "device",
@@ -421,7 +380,6 @@ class HackRF {
 			value: 0,
 			index: 0,
 		});
-		console.log(result);
 		if (result.status !== 'ok') {
 			throw 'failed to reset';
 		}
@@ -429,7 +387,6 @@ class HackRF {
 
 	async startRx(callback) {
 		if (this.rxRunning) {
-			console.log('startRx: already running, stopping first...');
 			await this.stopRx();
 		}
 
@@ -448,10 +405,10 @@ class HackRF {
 					if (this.rxRunning) {
 						console.error('startRx: transfer error:', e.message || e);
 					}
-					break;
+				break;
 				}
 			}
-			console.log('rx transfer ended (rx)');
+			// transfer loop ended
 		};
 		this.rxRunning = Array.from({ length: 8 }, transfer);
 	}
@@ -460,7 +417,6 @@ class HackRF {
 		await this.usbApiRequired(0x0104);
 
 		if (this.rxRunning) {
-			console.log('startRxSweep: already running, stopping first...');
 			await this.stopRx();
 		}
 
@@ -482,7 +438,7 @@ class HackRF {
 					break;
 				}
 			}
-			console.log('rx transfer ended (rx sweep)');
+			// transfer loop ended
 		};
 		this.rxRunning = Array.from({ length: 8 }, transfer);
 	}
@@ -497,7 +453,6 @@ class HackRF {
 			value: 0,
 			index: 0,
 		}, 1);
-		console.log(result);
 		if (result.status !== 'ok') {
 			throw 'failed to readBoardId';
 		}
@@ -510,7 +465,6 @@ class HackRF {
 		const freqHz0 = freqHz - (freqMhz * 1e6);
 		data.setUint32(0, freqMhz, true);
 		data.setUint32(4, freqHz0, true);
-		console.log('setFreq', { freqHz, freqMhz, freqHz0, data });
 		const result = await this.device.controlTransferOut({
 			requestType: "vendor",
 			recipient: "device",
@@ -518,7 +472,6 @@ class HackRF {
 			value: 0,
 			index: 0,
 		}, data.buffer);
-		console.log(result);
 		if (result.status !== 'ok') {
 			throw 'failed to setFreq';
 		}
@@ -550,7 +503,6 @@ class HackRF {
 			data.setUint8(9 + i * 2, frequencyList[i] & 0xff);
 			data.setUint8(10 + i * 2, (frequencyList[i] >> 8) & 0xff);
 		}
-		console.log('initSweep', { frequencyList, numRanges, numBytes, stepWidth, offset, style, data });
 		const result = await this.device.controlTransferOut({
 			requestType: "vendor",
 			recipient: "device",
@@ -558,7 +510,6 @@ class HackRF {
 			value: numBytes & 0xffff,
 			index: (numBytes >> 16) & 0xffff,
 		}, data.buffer);
-		console.log(result);
 		if (result.status !== 'ok') {
 			throw 'failed to initSweep';
 		}
@@ -566,7 +517,6 @@ class HackRF {
 
 	async stopRx() {
 		if (this.rxRunning) {
-			console.log('stopRx waiting');
 			const promises = this.rxRunning;
 			this.rxRunning = null;
 			try {
@@ -575,7 +525,6 @@ class HackRF {
 				console.warn('stopRx: error during transfer shutdown:', e.message || e);
 			}
 		}
-		console.log('stopRx');
 		try {
 			await this.setTransceiverMode(HackRF.HACKRF_TRANSCEIVER_MODE_OFF);
 		} catch (e) {
@@ -584,7 +533,6 @@ class HackRF {
 	}
 
 	async stopTx() {
-		console.log('stopTx');
 		await this.setTransceiverMode(HackRF.HACKRF_TRANSCEIVER_MODE_OFF);
 	}
 
@@ -594,7 +542,6 @@ class HackRF {
 	}
 
 	async exit() {
-		console.log('exit');
 		await this.device.close();
 	}
 }
