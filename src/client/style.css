@@ -15,6 +15,26 @@
 	box-sizing: border-box;
 	margin: 0;
 	padding: 0;
+	scrollbar-width: thin;
+	scrollbar-color: #444 #1a1a1a;
+}
+
+*::-webkit-scrollbar {
+	width: 6px;
+	height: 6px;
+}
+*::-webkit-scrollbar-track {
+	background: #1a1a1a;
+}
+*::-webkit-scrollbar-thumb {
+	background-color: #444;
+	border-radius: 3px;
+}
+*::-webkit-scrollbar-thumb:hover {
+	background-color: #666;
+}
+*::-webkit-scrollbar-corner {
+	background: #1a1a1a;
 }
 
 [v-cloak] {
