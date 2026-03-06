@@ -137,16 +137,19 @@ async function transcribe(audio, id, audioDuration) {
 			no_repeat_ngram_size: 3,
 			condition_on_prev_text: false,
 			initial_prompt:
-				// NZ HAM callsign prefix ZL (ZL1 Auckland, ZL2 Wellington, ZL3 Christchurch,
-				// ZL4 Dunedin, ZL6 HF beacon) — seeding these tokens narrows the decoder
-				// toward NZ English phonology for the rest of the utterance.
-				'New Zealand amateur radio. ZL1, ZL2, ZL3, ZL4, ZL6. ' +
-				'Auckland, Wellington, Christchurch, Dunedin, Hamilton, Tauranga. ' +
-				'CQ CQ CQ, QSO, QRZ, QTH, QRM, QRN, QSB, QRX, QRT. ' +
-				'73, 88, over, copy, roger, break, go ahead, standby. ' +
-				'Frequency, MHz, kilohertz, signal, squelch, operator, station, ' +
-				'callsign, repeater, transceiver, antenna, SSB, FM, AM, NFM. ' +
-				'NZART, Waikato, Canterbury, Otago, Manawatu.',
+				// Seed the decoder with NZ emergency-service and HAM code notation.
+				// Priming with written codes (K46, R4, Q81) makes Whisper prefer that
+				// form over phonetic expansions ("Kay forty-six", "are four").
+				// NZ place names anchor the decoder to NZ English phonology.
+				'New Zealand emergency services and amateur radio. ' +
+				'Fire codes: K1 K2 K22 K28 K31 K32 K44 K45 K46 K46-1 K46-2 K46-3 K46-4 K55 K66 K77 K88 K99. ' +
+				'Ambulance: Priority 1 Priority 2 Priority 3. Code 1 Code 2. ' +
+				'R4 R6 R7 R9 R13 R17 R25 R33 R43 R49 R99. Status 1 Status 2 Status 3 Status 4. ' +
+				'Q81 Q82 Q83 Q84 Q85 Q88 Q89 Q90. ' +
+				'Auckland Wellington Christchurch Tauranga Hamilton Rotorua Whangarei Dunedin. ' +
+				'Ngaruawahia Papatoetoe Papakura Manukau Otahuhu Waitakere Mangere. ' +
+				'Palmerston North Whanganui Napier Hastings Gisborne Invercargill Oamaru. ' +
+				'ZL1 ZL2 ZL3 ZL4. CQ QRZ QSO over roger copy standby NFM FM.',
 		};
 		if (isMultilingual) {
 			opts.language = 'en';

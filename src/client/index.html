@@ -391,9 +391,11 @@
 				<div v-if="whisper.log.length === 0" class="transcript-empty">
 					No transcriptions yet. Start Whisper and tune to a voice transmission.
 				</div>
-				<div v-for="(entry, i) in whisper.log" :key="i" class="transcript-entry">
+				<div v-for="(entry, i) in whisper.log" :key="i" class="transcript-entry"
+					:style="entry.vfoIndex != null ? { borderLeftColor: vfoColor(entry.vfoIndex) } : {}">
+					<span class="transcript-vfo-dot" v-if="entry.vfoIndex != null" :style="{ background: vfoColor(entry.vfoIndex) }" :title="'VFO ' + (entry.vfoIndex + 1)"></span>
 					<span class="transcript-time">{{ entry.time }}</span>
-					<span class="transcript-freq">{{ entry.freq }}</span>
+					<span class="transcript-freq" :style="entry.vfoIndex != null ? { color: vfoColor(entry.vfoIndex) } : {}">{{ entry.freq }}</span>
 					<span class="transcript-duration" v-if="entry.duration">({{ entry.duration }})</span>
 					<span class="transcript-duration" v-if="entry.transcribeTime" title="Transcription inference time">⏱ {{ entry.transcribeTime }}</span>
 					<span class="transcript-text">{{ entry.text }}</span>

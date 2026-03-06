@@ -695,9 +695,10 @@ createApp({
 						? meta.startTime.toLocaleTimeString()
 						: new Date().toLocaleTimeString();
 					const freq = meta.freq || '';
+					const vfoIndex = meta.vfoIndex ?? null;
 					const duration = msg.audioDuration ? msg.audioDuration.toFixed(1) + 's' : '';
 					const transcribeTime = msg.transcribeTime ? msg.transcribeTime + 's' : '';
-					this.whisper.log.push({ time, freq, text, duration, transcribeTime });
+					this.whisper.log.push({ time, freq, text, duration, transcribeTime, vfoIndex });
 					// Auto-scroll
 					this.$nextTick(() => {
 						const el = this.$refs.transcriptBody;
@@ -836,6 +837,7 @@ createApp({
 			this._whisperChunkMeta[id] = {
 				startTime: vs.recordStart || new Date(),
 				freq: vs.recordStartFreq,
+				vfoIndex,
 			};
 			this._whisperWorker.postMessage(
 				{ type: 'transcribe', audio: full, id, audioDuration },

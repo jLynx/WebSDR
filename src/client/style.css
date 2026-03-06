@@ -806,6 +806,19 @@ canvas {
 	display: flex;
 	gap: 8px;
 	align-items: baseline;
+	border-left: 3px solid transparent;
+	padding-left: 8px;
+	margin-left: -11px;
+	border-radius: 2px;
+}
+
+.transcript-vfo-dot {
+	width: 7px;
+	height: 7px;
+	border-radius: 50%;
+	flex-shrink: 0;
+	align-self: center;
+	opacity: 0.9;
 }
 
 .transcript-time {
