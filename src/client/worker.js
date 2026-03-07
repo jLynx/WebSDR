@@ -614,45 +614,64 @@ class Worker {
 					this.phases[phaseIdx][tapIdx] = (i < taps.length) ? taps[i] : 0.0;
 				}
 
-				this.buffer = new Float32Array(this.tapsPerPhase - 1 + 64000); // Need enough space for block
-				this.bufStartOffset = this.tapsPerPhase - 1;
-				this.phase = 0;
-				this.offset = 0;
-			}
+					// Delay line: only needs tapsPerPhase-1 history samples + a working
+					// window for the largest expected input block.  We start conservatively
+					// at 4096 samples and grow on demand so we don't waste 256 KB per VFO.
+					const initBlockSize = 4096;
+					this.bufStartOffset = this.tapsPerPhase - 1;
+					this.buffer = new Float32Array(this.bufStartOffset + initBlockSize);
+					this.phase = 0;
+					this.offset = 0;
 
-			process(input, count) {
-				const out = [];
-
-				// Copy input to buffer (shifting along in the delay line)
-				// We assume buffer handles max chunk sizes appropriately.
-				this.buffer.set(input.subarray(0, count), this.bufStartOffset);
-
-				while (this.offset < count) {
-					// Do convolution
-					let sum = 0.0;
-					const phaseTaps = this.phases[this.phase];
-					for (let i = 0; i < this.tapsPerPhase; i++) {
-						sum += this.buffer[this.offset + i] * phaseTaps[i];
-					}
-					out.push(sum);
-
-					// Increment phase
-					this.phase += this.decim;
-
-					// Branchless phase advance if phase wrap arround occurs
-					this.offset += Math.floor(this.phase / this.interp);
-
-					// Wrap around if needed
-					this.phase = this.phase % this.interp;
+					// Pre-allocated output buffer — grown as needed, never shrunk.
+					// Avoids the per-call JS Array + Float32Array(array) allocations
+					// that previously caused 900 heap objects/sec with 6 VFOs.
+					this._outBuf = new Float32Array(Math.ceil(initBlockSize * interp / decim) + 4);
 				}
-				this.offset -= count;
 
-				// Move delay (memmove in c++)
-				this.buffer.copyWithin(0, count, count + this.tapsPerPhase - 1);
+				process(input, count) {
+					// Grow delay buffer on demand (rare; only on the first large block)
+					const needed = this.bufStartOffset + count;
+					if (needed > this.buffer.length) {
+						const bigger = new Float32Array(needed + 1024);
+						bigger.set(this.buffer.subarray(0, this.bufStartOffset));
+						this.buffer = bigger;
+					}
 
-				return new Float32Array(out);
+					// Copy input into the delay line
+					this.buffer.set(input.subarray(0, count), this.bufStartOffset);
+
+					// Pre-calculate max output count and grow output buffer if needed
+					const maxOut = Math.ceil(count * this.interp / this.decim) + 4;
+					if (maxOut > this._outBuf.length) {
+						this._outBuf = new Float32Array(maxOut + 64);
+					}
+
+					let outIdx = 0;
+					while (this.offset < count) {
+						// Convolution for this polyphase sub-filter
+						let sum = 0.0;
+						const phaseTaps = this.phases[this.phase];
+						const bufOff = this.offset;
+						for (let i = 0; i < this.tapsPerPhase; i++) {
+							sum += this.buffer[bufOff + i] * phaseTaps[i];
+						}
+						this._outBuf[outIdx++] = sum;
+
+						this.phase += this.decim;
+						this.offset += Math.floor(this.phase / this.interp);
+						this.phase = this.phase % this.interp;
+					}
+					this.offset -= count;
+
+					// Shift history samples to the front of the delay line
+					this.buffer.copyWithin(0, count, count + this.bufStartOffset);
+
+					// Return a view — callers copy immediately via pushAudio/pushWhisper
+					// or iterate read-only, so a view is safe and allocation-free.
+					return this._outBuf.subarray(0, outIdx);
+				}
 			}
-		}
 
 		class RationalResampler {
 			constructor(inSamplerate, outSamplerate) {
@@ -736,6 +755,9 @@ class Worker {
 			squelchOpen: false,
 			// POCSAG decoder instance (created on demand, cleared on mode change)
 			pocsagDecoder: null,
+			// Reusable scratch buffer for non-FM demod samples — grown on demand,
+			// never shrunk.  Avoids per-callback Float32Array construction.
+			scratchBuf: new Float32Array(512),
 		});
 		this.vfoStates = [makeVfoState()];
 
@@ -909,20 +931,23 @@ class Worker {
 				if (numAudioSamples === 0) { perf.droppedChunks++; vfoState.squelchOpen = false; return null; }
 				perf.audioSamplesOut += numAudioSamples;
 
-				let result = new Float32Array(ddcOut.subarray(0, numAudioSamples));
+				// Work directly on ddcOut — no throwaway copy allocation.
+				// pushAudio/pushWhisper copy via .set() before the next chunk
+				// can overwrite this buffer, so a subarray view is safe.
+				const result = ddcOut.subarray(0, numAudioSamples);
 
 				// Detect if Rust squelch is blocking: output is all zeros when closed.
 				// Sample a handful of values to check for actual audio energy.
 				if (params.squelchEnabled) {
 					let sumSq = 0;
-					const checkLen = Math.min(result.length, 256);
+					const checkLen = Math.min(numAudioSamples, 256);
 					for (let i = 0; i < checkLen; i++) sumSq += result[i] * result[i];
 					vfoState.squelchOpen = sumSq > 1e-10;
 				} else {
 					vfoState.squelchOpen = false;
 				}
 
-				// ── De-emphasis (SDR++ filter/deephasis.h) ────────────────
+				// ── De-emphasis + hard-clip combined in one pass ──────────
 				if (params.deEmphasis !== 'none') {
 					const dt = 1.0 / AUDIO_RATE;
 					let tau;
@@ -933,16 +958,19 @@ class Worker {
 						default: tau = 50e-6; break;
 					}
 					const alpha = dt / (tau + dt);
-					for (let i = 0; i < result.length; i++) {
-						vfoState.deemphPrev = alpha * result[i] + (1 - alpha) * vfoState.deemphPrev;
-						result[i] = vfoState.deemphPrev;
+					const oneMinusAlpha = 1.0 - alpha;
+					let prev = vfoState.deemphPrev;
+					for (let i = 0; i < numAudioSamples; i++) {
+						prev = alpha * result[i] + oneMinusAlpha * prev;
+						result[i] = prev < -1.0 ? -1.0 : prev > 1.0 ? 1.0 : prev;
 					}
-				}
-
-				// Hard-clip as safety net
-				for (let i = 0; i < result.length; i++) {
-					if (result[i] > 1.0) result[i] = 1.0;
-					else if (result[i] < -1.0) result[i] = -1.0;
+					vfoState.deemphPrev = prev;
+				} else {
+					// Hard-clip only
+					for (let i = 0; i < numAudioSamples; i++) {
+						if (result[i] > 1.0) result[i] = 1.0;
+						else if (result[i] < -1.0) result[i] = -1.0;
+					}
 				}
 
 				return result;
@@ -962,16 +990,22 @@ class Worker {
 				squelchMag /= numDemodSamples;
 				const squelchDb = 10 * Math.log10(squelchMag + 1e-12);
 
+				// Grow the shared scratch buffer if this block is larger than expected
+				if (numDemodSamples > vfoState.scratchBuf.length) {
+					vfoState.scratchBuf = new Float32Array(numDemodSamples + 128);
+				}
+				const audioDemodRateSamples = vfoState.scratchBuf.subarray(0, numDemodSamples);
+
 				if (params.squelchEnabled && squelchDb < params.squelchLevel) {
 					vfoState.squelchOpen = false;
-					const zeros = new Float32Array(numDemodSamples);
-					const result = vfoState.audioResampler.process(zeros);
+					// Pass the pre-zeroed scratch slice (fill only what we use)
+					audioDemodRateSamples.fill(0);
+					const result = vfoState.audioResampler.process(audioDemodRateSamples);
 					return result.length > 0 ? result : null;
 				}
 				// Signal is above squelch threshold — mark as receiving
 				vfoState.squelchOpen = params.squelchEnabled && squelchDb >= params.squelchLevel;
 
-				const audioDemodRateSamples = new Float32Array(numDemodSamples);
 				const ifRate = vfoState.currentIfRate;
 
 				if (mode === 'am') {
@@ -1074,14 +1108,22 @@ class Worker {
 			const signed = new Int8Array(data.buffer, data.byteOffset, data.length);
 			perf.lastChunkSize = signed.length;
 			perf.inputSamplesSum += signed.length / 2;
-			for (let i = 0; i < signed.length; i++) {
-				iqBuffer[iqBufferPos++] = signed[i];
-				if (iqBufferPos >= iqBuffer.length) {
-					iqBufferPos = 0;
-					spectrumThrottle++;
-					if (spectrumThrottle % fftSkipFrames === 0) {
-						spectrumFft.fft(iqBuffer, spectrumOutput);
-						spectrumCallback(new Float32Array(spectrumOutput));
+			// Bulk copy instead of byte-by-byte — lets the JIT use SIMD memcpy
+			{
+				let srcOff = 0;
+				while (srcOff < signed.length) {
+					const space = iqBuffer.length - iqBufferPos;
+					const toCopy = Math.min(space, signed.length - srcOff);
+					iqBuffer.set(signed.subarray(srcOff, srcOff + toCopy), iqBufferPos);
+					iqBufferPos += toCopy;
+					srcOff += toCopy;
+					if (iqBufferPos >= iqBuffer.length) {
+						iqBufferPos = 0;
+						spectrumThrottle++;
+						if (spectrumThrottle % fftSkipFrames === 0) {
+							spectrumFft.fft(iqBuffer, spectrumOutput);
+							spectrumCallback(new Float32Array(spectrumOutput));
+						}
 					}
 				}
 			}
@@ -1126,15 +1168,21 @@ class Worker {
 					const v = volume / 100;
 					const vol = v * v;
 					for (let i = 0; i < audio.length; i++) {
-						audio[i] *= vol;
-						if (audio[i] > 1.0) audio[i] = 1.0;
-						else if (audio[i] < -1.0) audio[i] = -1.0;
+						const s = audio[i] * vol;
+						audio[i] = s < -1.0 ? -1.0 : s > 1.0 ? 1.0 : s;
 					}
 					pushAudio(audio);
 				} else if (vfoOutputs.length > 1) {
-					// Mix multiple VFOs with per-VFO volume (SDR++ volume² curve)
-					const maxLen = Math.max(...vfoOutputs.map(o => o.audio.length));
-					const mixed = new Float32Array(maxLen);
+					// Mix multiple VFOs with per-VFO volume (SDR++ volume² curve).
+					// Re-use a shared mix buffer (grown on demand) to avoid
+					// allocating a new Float32Array every USB callback.
+					let maxLen = 0;
+					for (const o of vfoOutputs) if (o.audio.length > maxLen) maxLen = o.audio.length;
+					if (!this._mixBuf || this._mixBuf.length < maxLen) {
+						this._mixBuf = new Float32Array(maxLen + 256);
+					}
+					const mixed = this._mixBuf;
+					mixed.fill(0, 0, maxLen);
 					for (const { audio, volume } of vfoOutputs) {
 						const v = volume / 100;
 						const vol = v * v;
@@ -1147,7 +1195,7 @@ class Worker {
 						if (mixed[i] > 1.0) mixed[i] = 1.0;
 						else if (mixed[i] < -1.0) mixed[i] = -1.0;
 					}
-					pushAudio(mixed);
+					pushAudio(mixed.subarray(0, maxLen));
 				}
 			} catch (e) {
 				console.error('Audio DSP error:', e.message || e);
