@@ -31,25 +31,38 @@ class HackRF {
 		[1, "JawBreaker"],
 		[2, "HackRF One"],
 		[3, "rad1o"],
-		[255, "Invalid Board ID"],
+		[4, "HackRF One r9"],
+		[5, "HackRF Pro"],
+		[0xFE, "Undetected"],
+		[0xFF, "Invalid Board ID"],
 	]));
 
 	static BOARD_REV_UNRECOGNIZED = 0xfe;
 	static BOARD_REV_UNDETECTED = 0xff;
+	static HACKRF_BOARD_REV_GSG = 0x80;
+
+	static HACKRF_PLATFORM_JAWBREAKER = (1 << 0);
+	static HACKRF_PLATFORM_HACKRF1_OG = (1 << 1);
+	static HACKRF_PLATFORM_RAD1O     = (1 << 2);
+	static HACKRF_PLATFORM_HACKRF1_R9 = (1 << 3);
+	static HACKRF_PLATFORM_PRALINE   = (1 << 4);
 	static BOARD_REV_NAME = Object.freeze(new Map([
-		[0, "Older than r6"],
-		[1, "r6"],
-		[2, "r7"],
-		[3, "r8"],
-		[4, "r9"],
-		[5, "r10"],
-		[0x81, "GSG r6"],
-		[0x82, "GSG r7"],
-		[0x83, "GSG r8"],
-		[0x84, "GSG r9"],
-		[0x85, "GSG r10"],
-		[HackRF.BOARD_REV_UNRECOGNIZED, "Unknwon"],
-		[HackRF.BOARD_REV_UNDETECTED, "Unknown"],
+		// HackRF One revisions (non-GSG and GSG share the same name)
+		[0,    "older than r6"],
+		[1,    "r6"],  [0x81, "r6"],
+		[2,    "r7"],  [0x82, "r7"],
+		[3,    "r8"],  [0x83, "r8"],
+		[4,    "r9"],  [0x84, "r9"],
+		[5,    "r10"], [0x85, "r10"],
+		// HackRF Pro (Praline) revisions
+		[6,    "r0.1"], [0x86, "r0.1"],
+		[7,    "r0.2"], [0x87, "r0.2"],
+		[8,    "r0.3"], [0x88, "r0.3"],
+		[9,    "r1.0"], [0x89, "r1.0"],
+		[10,   "r1.1"], [0x8a, "r1.1"],
+		[11,   "r1.2"], [0x8b, "r1.2"],
+		[HackRF.BOARD_REV_UNRECOGNIZED, "unrecognized"],
+		[HackRF.BOARD_REV_UNDETECTED,   "undetected"],
 	]));
 
 	static USB_CONFIG_STANDARD = 0x1;
@@ -454,9 +467,46 @@ class HackRF {
 			index: 0,
 		}, 1);
 		if (result.status !== 'ok') {
-			throw 'failed to readBoardId';
+			throw 'failed to boardRevRead';
 		}
 		return result.data.getUint8(0);
+	}
+
+	async readSupportedPlatform() {
+		await this.usbApiRequired(0x0106);
+
+		const result = await this.device.controlTransferIn({
+			requestType: "vendor",
+			recipient: "device",
+			request: HackRF.HACKRF_VENDOR_REQUEST_SUPPORTED_PLATFORM_READ,
+			value: 0,
+			index: 0,
+		}, 4);
+		if (result.status !== 'ok') {
+			throw 'failed to readSupportedPlatform';
+		}
+		// Firmware returns big-endian: (data[0]<<24 | data[1]<<16 | data[2]<<8 | data[3])
+		return result.data.getUint32(0, false);
+	}
+
+	async getOperacakeBoards() {
+		const result = await this.device.controlTransferIn({
+			requestType: "vendor",
+			recipient: "device",
+			request: HackRF.HACKRF_VENDOR_REQUEST_OPERACAKE_GET_BOARDS,
+			value: 0,
+			index: 0,
+		}, 8);
+		if (result.status !== 'ok') {
+			throw 'failed to getOperacakeBoards';
+		}
+		const boards = [];
+		for (let i = 0; i < 8; i++) {
+			const addr = result.data.getUint8(i);
+			if (addr === 0xFF) break; // HACKRF_OPERACAKE_ADDRESS_INVALID
+			boards.push(addr);
+		}
+		return boards;
 	}
 
 	async setFreq(freqHz) {

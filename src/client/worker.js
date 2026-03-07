@@ -440,18 +440,69 @@ class Worker {
 		const apiVersion = await hackrf.readApiVersion();
 		const { partId, serialNo } = await hackrf.readPartIdSerialNo();
 
+		// Reconstruct bcdDevice for version gating (matches usbApiRequired logic)
+		const [apiMajor, apiMinor, apiSubminor] = apiVersion;
+		const bcdVersion = (apiMajor << 8) | (apiMinor << 4) | apiSubminor;
+
+		const serialStr = serialNo.map((i) => (i + 0x100000000).toString(16).slice(1)).join('');
+		const partIdStr = partId.map((i) => '0x' + (i + 0x100000000).toString(16).slice(1)).join(' ');
+
+		console.log(`Serial number: ${serialStr}`);
+		console.log(`Board ID Number: ${boardId} (${HackRF.BOARD_ID_NAME.get(boardId)})`);
+		console.log(`Firmware Version: ${versionString} (API:${apiMajor}.${String(apiMinor) + String(apiSubminor)})`);
+		console.log(`Part ID Number: ${partIdStr}`);
+
+		// Board Rev — only applicable for HackRF One OG, r9, or Praline (API >= 0x0106)
 		let boardRev = HackRF.BOARD_REV_UNDETECTED;
-		try {
-			boardRev = await hackrf.boardRevRead();
-		} catch (e) {
-			console.warn('boardRevRead not supported:', e);
+		if (bcdVersion >= 0x0106 && (boardId === 2 || boardId === 4 || boardId === 5)) {
+			try {
+				boardRev = await hackrf.boardRevRead();
+				if (boardRev === HackRF.BOARD_REV_UNDETECTED) {
+					console.log('Hardware Revision: Error: Hardware revision not yet detected by firmware.');
+				} else if (boardRev === HackRF.BOARD_REV_UNRECOGNIZED) {
+					console.log('Hardware Revision: Warning: Hardware revision not recognized by firmware.');
+				} else {
+					console.log(`Hardware Revision: ${HackRF.BOARD_REV_NAME.get(boardRev)}`);
+					if (boardRev > 0) { // BOARD_REV_HACKRF1_OLD = 0
+						if (boardRev & HackRF.HACKRF_BOARD_REV_GSG) {
+							console.log('Hardware appears to have been manufactured by Great Scott Gadgets.');
+						} else {
+							console.log('Hardware does not appear to have been manufactured by Great Scott Gadgets.');
+						}
+					}
+				}
+			} catch (e) {
+				console.warn('boardRevRead not supported:', e);
+			}
 		}
 
-		console.log(`Serial Number: ${serialNo.map((i) => (i + 0x100000000).toString(16).slice(1)).join('')}`)
-		console.log(`Board ID Number: ${boardId} (${HackRF.BOARD_ID_NAME.get(boardId)})`);
-		console.log(`Firmware Version: ${versionString} (API:${apiVersion[0]}.${apiVersion[1]}${apiVersion[2]})`);
-		console.log(`Part ID Number: ${partId.map((i) => (i + 0x100000000).toString(16).slice(1)).join(' ')}`)
-		console.log(`Board Rev: ${HackRF.BOARD_REV_NAME.get(boardRev)} (${boardRev})`)
+		// Supported Platform (API >= 0x0106)
+		if (bcdVersion >= 0x0106) {
+			try {
+				const platform = await hackrf.readSupportedPlatform();
+				const platforms = [];
+				if (platform & HackRF.HACKRF_PLATFORM_JAWBREAKER) platforms.push('Jawbreaker');
+				if (platform & HackRF.HACKRF_PLATFORM_RAD1O) platforms.push('rad1o');
+				if ((platform & HackRF.HACKRF_PLATFORM_HACKRF1_OG) || (platform & HackRF.HACKRF_PLATFORM_HACKRF1_R9)) platforms.push('HackRF One');
+				if (platform & HackRF.HACKRF_PLATFORM_PRALINE) {
+					platforms.push((boardRev & HackRF.HACKRF_BOARD_REV_GSG) ? 'HackRF Pro' : 'Praline');
+				}
+				console.log(`Hardware supported by installed firmware: ${platforms.join(', ')}`);
+			} catch (e) {
+				console.warn('readSupportedPlatform not supported:', e);
+			}
+		}
+
+		// Opera Cake
+		try {
+			const operacakes = await hackrf.getOperacakeBoards();
+			for (const addr of operacakes) {
+				console.log(`Opera Cake found, address: ${addr}`);
+			}
+		} catch (e) {
+			// Opera Cake detection not supported or not present — ignore
+		}
+
 		return { boardId, versionString, apiVersion, partId, serialNo };
 	}
 
@@ -1389,7 +1440,6 @@ class Worker {
 	async close() {
 		await this.hackrf.close();
 		await this.hackrf.exit();
-		await this.hackrf.device.forget();
 	}
 }
 
