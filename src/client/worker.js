@@ -1098,7 +1098,10 @@ class Worker {
 					if (this.vfoParams[v].enabled) {
 						vfoOutputs.push({ audio: out, volume: this.vfoParams[v].volume || 50 });
 						// Send isolated pre-mix, pre-volume audio to Whisper per VFO
-						pushWhisper(v, this.vfoParams[v].freq, out);
+						// Skip Whisper when POCSAG is active — it's a data signal, not speech
+						if (!this.vfoParams[v].pocsag) {
+							pushWhisper(v, this.vfoParams[v].freq, out);
+						}
 					}
 					// POCSAG decoding runs regardless of mute — it's a data decoder
 					// (NFM only — requires clean FM demodulated audio)
