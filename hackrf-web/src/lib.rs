@@ -232,6 +232,8 @@ impl FFT {
 // DSP Primitives (matching SDR++ core/src/dsp/)
 // ============================================================================
 
+
+
 /// Cosine window (matches SDR++ dsp/window/cosine.h)
 /// n: continuous offset value, big_n: window length N
 fn cosine_window(n: f64, big_n: f64, coefs: &[f64]) -> f64 {
@@ -279,6 +281,31 @@ fn low_pass_taps(cutoff: f64, trans_width: f64, sample_rate: f64) -> Vec<f32> {
         let win = nuttall_window(t - half, count as f64);
         let val = sinc(t * omega) * win * corr;
         taps.push(val as f32);
+    }
+    taps
+}
+
+/// Generate high-pass FIR taps using spectral inversion of low-pass 
+/// (matches SDR++ dsp/taps/high_pass.h)
+fn high_pass_taps(cutoff: f64, trans_width: f64, sample_rate: f64) -> Vec<f32> {
+    let mut count = estimate_tap_count(trans_width, sample_rate).max(1);
+    count |= 1; // Length must be odd for spectral inversion
+    
+    let omega = 2.0 * std::f64::consts::PI * cutoff / sample_rate;
+    let half = count as f64 / 2.0;
+    let corr = omega / std::f64::consts::PI;
+    let mut taps = Vec::with_capacity(count);
+    
+    for i in 0..count {
+        let t = i as f64 - half + 0.5;
+        let win = nuttall_window(t - half, count as f64);
+        let val = sinc(t * omega) * win * corr;
+        
+        let mut tap_val = -(val as f32); // Invert
+        if i == count / 2 {
+            tap_val += 1.0;
+        }
+        taps.push(tap_val);
     }
     taps
 }
@@ -1387,6 +1414,10 @@ pub struct DspProcessor {
     scratch_q2: Vec<f32>,
     scratch_audio: Vec<f32>,
     scratch_audio2: Vec<f32>,
+    
+    audio_fir_hp: RealFIR,
+    use_hp: bool,
+    use_lp: bool,
 }
 
 #[wasm_bindgen]
@@ -1406,14 +1437,9 @@ impl DspProcessor {
         let phase_inc = -2.0 * PI * shift_hz / in_sample_rate;
         let (sin_inc, cos_inc) = phase_inc.sin_cos();
 
-        // Pre-decimation: hybrid CIC + FIR
-        // CIC averaging handles bulk decimation (free, in-place).
-        // FIR_2_2 (69-tap) provides final anti-aliasing at reduced rate.
-        // At 20 MHz WFM: CIC 32x (131k→4k, ~0.3ms) + FIR 2x (4k→2k, ~0.3ms)
-        // vs all-FIR which took ~3ms and exceeded the 6.5ms USB budget.
+        // Pre-decimation: pure FIR filter plan matching SDR++
         let total_ratio = compute_power_decim_ratio(in_sample_rate, if_sample_rate);
-        let (cic_stages, fir_ratio) = split_decim_ratio(total_ratio);
-        let power_decim = PowerDecimator::new(fir_ratio);
+        let power_decim = PowerDecimator::new(total_ratio);
         let pre_decim_rate = in_sample_rate / total_ratio as f32;
 
         // IQ rational resampler: pre_decim_rate → IF
@@ -1441,6 +1467,12 @@ impl DspProcessor {
             RealFIR::new(taps)
         };
 
+        // Audio HPF: HPF at 300Hz, transition = 100Hz
+        let audio_fir_hp = {
+            let taps = high_pass_taps(300.0, 100.0, if_sample_rate as f64);
+            RealFIR::new(taps)
+        };
+
         // Audio resampler: IF SR → audio SR
         let audio_resampler = Self::build_f32_resampler(if_sample_rate, audio_sample_rate);
 
@@ -1454,7 +1486,7 @@ impl DspProcessor {
             in_sample_rate,
             if_sample_rate,
             audio_sample_rate,
-            cic_stages,
+            cic_stages: 0,
             power_decim,
             is_wfm: false,
             bandwidth,
@@ -1464,6 +1496,9 @@ impl DspProcessor {
             prev_phase: 0.0,
             inv_deviation,
             post_demod_fir,
+            audio_fir_hp,
+            use_lp: false,
+            use_hp: false,
             audio_resampler,
             squelch_level: -100.0,
             squelch_enabled: false,
@@ -1566,6 +1601,12 @@ impl DspProcessor {
         self.squelch_enabled = enabled;
     }
 
+    /// Enable or disable audio filters (LowPass, HighPass) for NFM.
+    pub fn set_audio_filters(&mut self, low_pass: bool, high_pass: bool) {
+        self.use_lp = low_pass;
+        self.use_hp = high_pass;
+    }
+
     /// Enable or disable WFM mode. When enabled, uses SDR++ broadcast_fm.h
     /// audio filter settings (15 kHz cutoff, 4 kHz transition) instead of
     /// the standard bandwidth/2 cutoff used for NFM and other modes.
@@ -1581,6 +1622,7 @@ impl DspProcessor {
             let c = self.bandwidth as f64 / 2.0;
             (c, c * 0.1)
         };
+        // Use self.if_sample_rate here, but WFM also needs an IF SR of 250k.
         let taps = low_pass_taps(cutoff, trans, self.if_sample_rate as f64);
         self.post_demod_fir.set_taps(taps);
     }
@@ -1595,11 +1637,9 @@ impl DspProcessor {
         }
         self.if_sample_rate = new_if_sr;
 
-        // Rebuild CIC + FIR decimation for new ratio
+        // Rebuild FIR decimation for new ratio
         let total_ratio = compute_power_decim_ratio(self.in_sample_rate, new_if_sr);
-        let (cic_stages, fir_ratio) = split_decim_ratio(total_ratio);
-        self.cic_stages = cic_stages;
-        self.power_decim = PowerDecimator::new(fir_ratio);
+        self.power_decim = PowerDecimator::new(total_ratio);
         let pre_decim_rate = self.in_sample_rate / total_ratio as f32;
 
         // Rebuild IQ resampler: pre_decim_rate → new IF
@@ -1677,10 +1717,8 @@ impl DspProcessor {
             return 0;
         }
 
-        // ── Stage 1: NCO (FrequencyXlator via phasor rotation) ──────
-        // Uses complex phasor rotation instead of per-sample sin/cos.
-        // Each sample: out = in * phasor; phasor *= phasor_inc
-        // Uses indexed writes instead of push() for better WASM perf.
+        // ── Stage 1 & 1b: Fused NCO + DC Blocker ────────────
+        // We fuse the DC blocker and NCO phasor rotation into a single pass.
         if self.nco_buf_i.len() < num_iq {
             self.nco_buf_i.resize(num_iq, 0.0);
             self.nco_buf_q.resize(num_iq, 0.0);
@@ -1695,9 +1733,11 @@ impl DspProcessor {
         let mut dc_i = self.dc_avg_i;
         let mut dc_q = self.dc_avg_q;
 
-        for k in 0..num_iq {
-            let mut i_val = input[k * 2] as f32 / 128.0;
-            let mut q_val = input[k * 2 + 1] as f32 / 128.0;
+        let inv_128 = 1.0 / 128.0;
+
+        for i in 0..num_iq {
+            let mut i_val = input[i * 2] as f32 * inv_128;
+            let mut q_val = input[i * 2 + 1] as f32 * inv_128;
 
             // DC Blocker (matches SDR++ genDCBlockRate)
             dc_i = dc_i * alpha + i_val * (1.0 - alpha);
@@ -1706,12 +1746,10 @@ impl DspProcessor {
             q_val -= dc_q;
 
             // Standard complex multiply: (i + jq) * (pr + j*pi)
-            //   = (i*pr - q*pi) + j(i*pi + q*pr)
-            // Matches SDR++ VOLK volk_32fc_s32fc_x2_rotator2_32fc
-            self.nco_buf_i[k] = i_val * pr - q_val * pi;
-            self.nco_buf_q[k] = i_val * pi + q_val * pr;
+            self.nco_buf_i[i] = i_val * pr - q_val * pi;
+            self.nco_buf_q[i] = i_val * pi + q_val * pr;
 
-            // Rotate phasor: phasor *= phasor_inc
+            // Rotate phasor
             let new_r = pr * ir - pi * ii;
             let new_i = pr * ii + pi * ir;
             pr = new_r;
@@ -1726,24 +1764,8 @@ impl DspProcessor {
         self.phasor_re = pr / mag;
         self.phasor_im = pi / mag;
 
-        // ── Stage 1b: CIC pre-decimation (fast in-place averaging) ───
-        // Cascaded decimate-by-2 averaging stages to rapidly reduce
-        // sample count before FIR. Essentially free (~0.3ms for 5 stages
-        // at 20 MHz). Quality is fine at high oversampling ratios.
-        let mut cic_len = num_iq;
-        for _ in 0..self.cic_stages {
-            let half = cic_len / 2;
-            for k in 0..half {
-                self.nco_buf_i[k] = (self.nco_buf_i[2 * k] + self.nco_buf_i[2 * k + 1]) * 0.5;
-                self.nco_buf_q[k] = (self.nco_buf_q[2 * k] + self.nco_buf_q[2 * k + 1]) * 0.5;
-            }
-            cic_len = half;
-        }
-
-        // ── Stage 1c: FIR anti-aliasing (final decimation stage) ─────
-        // Single FIR_2_2 (69-tap) provides proper stopband rejection
-        // at the reduced sample rate where computation is affordable.
-        let decim_len = self.power_decim.process(cic_len, &self.nco_buf_i[..cic_len], &self.nco_buf_q[..cic_len]);
+        // ── Stage 1c: FIR anti-aliasing (recursive decimation structure) ─────
+        let decim_len = self.power_decim.process(num_iq, &self.nco_buf_i[..num_iq], &self.nco_buf_q[..num_iq]);
 
         // ── Stage 2: IQ Rational Resampler (post-decim → IF SR) ─────
         self.scratch_i.clear();
@@ -1809,9 +1831,37 @@ impl DspProcessor {
         self.prev_phase = prev_phase;
 
         // ── Stage 6: Post-Demod FIR Filter ──────────────────────────
-        // (matches SDR++ dsp/demod/fm.h, lowPass at bandwidth/2)
+        // (matches SDR++ dsp/demod/fm.h, lowPass at bandwidth/2, highPass at 300Hz)
         self.scratch_audio2.resize(if_count, 0.0);
-        self.post_demod_fir.process_block(&self.scratch_audio, &mut self.scratch_audio2);
+        
+        if self.is_wfm {
+            // WFM unconditionally uses post_demod_fir (15kHz cutoff)
+            self.post_demod_fir.process_block(&self.scratch_audio, &mut self.scratch_audio2);
+        } else {
+            // NFM: Optional UI-driven Audio HighPass and LowPass
+            let mut current_buf = &self.scratch_audio;
+            
+            if self.use_lp {
+                self.post_demod_fir.process_block(current_buf, &mut self.scratch_audio2);
+                self.scratch_audio.copy_from_slice(&self.scratch_audio2[..if_count]);
+                current_buf = &self.scratch_audio;
+            }
+            
+            if self.use_hp {
+                self.audio_fir_hp.process_block(current_buf, &mut self.scratch_audio2);
+                self.scratch_audio.copy_from_slice(&self.scratch_audio2[..if_count]);
+                current_buf = &self.scratch_audio; // now holds hp-filtered output
+            }
+            
+            // If neither were used, copy input to scratch_audio2 directly so the resampler gets it
+            if !self.use_lp && !self.use_hp {
+                self.scratch_audio2.copy_from_slice(&self.scratch_audio[..if_count]);
+            } else {
+                // Keep the final output in scratch_audio2 for the resampler input.
+                // It was copied to scratch_audio on the last used block, so we mirror it back
+                self.scratch_audio2.copy_from_slice(&self.scratch_audio[..if_count]);
+            }
+        }
 
         // ── Stage 7: Audio Resampler (50 kHz → 48 kHz) ─────────────
         // We will store the final audio output in `scratch_audio` to avoid allocating
@@ -1863,7 +1913,7 @@ impl DspProcessor {
             return 0;
         }
 
-        // Stage 1: NCO (phasor rotation) — indexed writes for WASM perf
+        // Stage 1 & 1b: Fused NCO + DC Blocker
         if self.nco_buf_i.len() < num_iq {
             self.nco_buf_i.resize(num_iq, 0.0);
             self.nco_buf_q.resize(num_iq, 0.0);
@@ -1878,18 +1928,20 @@ impl DspProcessor {
         let mut dc_i = self.dc_avg_i;
         let mut dc_q = self.dc_avg_q;
 
-        for k in 0..num_iq {
-            let mut i_val = input[k * 2] as f32 / 128.0;
-            let mut q_val = input[k * 2 + 1] as f32 / 128.0;
+        let inv_128 = 1.0 / 128.0;
 
-            // DC Blocker (matches SDR++ genDCBlockRate)
+        for i in 0..num_iq {
+            let mut i_val = input[i * 2] as f32 * inv_128;
+            let mut q_val = input[i * 2 + 1] as f32 * inv_128;
+
+            // DC Blocker
             dc_i = dc_i * alpha + i_val * (1.0 - alpha);
             dc_q = dc_q * alpha + q_val * (1.0 - alpha);
             i_val -= dc_i;
             q_val -= dc_q;
 
-            self.nco_buf_i[k] = i_val * pr - q_val * pi;
-            self.nco_buf_q[k] = i_val * pi + q_val * pr;
+            self.nco_buf_i[i] = i_val * pr - q_val * pi;
+            self.nco_buf_q[i] = i_val * pi + q_val * pr;
 
             let new_r = pr * ir - pi * ii;
             let new_i = pr * ii + pi * ir;
@@ -1904,19 +1956,8 @@ impl DspProcessor {
         self.phasor_re = pr / mag;
         self.phasor_im = pi / mag;
 
-        // Stage 1b: CIC pre-decimation (fast in-place averaging)
-        let mut cic_len = num_iq;
-        for _ in 0..self.cic_stages {
-            let half = cic_len / 2;
-            for k in 0..half {
-                self.nco_buf_i[k] = (self.nco_buf_i[2 * k] + self.nco_buf_i[2 * k + 1]) * 0.5;
-                self.nco_buf_q[k] = (self.nco_buf_q[2 * k] + self.nco_buf_q[2 * k + 1]) * 0.5;
-            }
-            cic_len = half;
-        }
-
-        // Stage 1c: FIR anti-aliasing (final decimation stage)
-        let decim_len = self.power_decim.process(cic_len, &self.nco_buf_i[..cic_len], &self.nco_buf_q[..cic_len]);
+        // Stage 1c: FIR anti-aliasing (recursive decimation structure)
+        let decim_len = self.power_decim.process(num_iq, &self.nco_buf_i[..num_iq], &self.nco_buf_q[..num_iq]);
 
         // Stage 2: IQ Rational Resampler
         self.scratch_i.clear();

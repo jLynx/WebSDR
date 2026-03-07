@@ -50,6 +50,10 @@ export class DspProcessor {
      */
     reset(): void;
     /**
+     * Enable or disable audio filters (LowPass, HighPass) for NFM.
+     */
+    set_audio_filters(low_pass: boolean, high_pass: boolean): void;
+    /**
      * Update the channel bandwidth and rebuild filters.
      */
     set_bandwidth(bandwidth: number): void;
@@ -154,6 +158,7 @@ export interface InitOutput {
     readonly dspprocessor_process_iq_only_ptr: (a: number, b: number, c: number) => number;
     readonly dspprocessor_process_ptr: (a: number, b: number, c: number) => number;
     readonly dspprocessor_reset: (a: number) => void;
+    readonly dspprocessor_set_audio_filters: (a: number, b: number, c: number) => void;
     readonly dspprocessor_set_bandwidth: (a: number, b: number) => void;
     readonly dspprocessor_set_if_sample_rate: (a: number, b: number) => void;
     readonly dspprocessor_set_shift: (a: number, b: number, c: number) => void;

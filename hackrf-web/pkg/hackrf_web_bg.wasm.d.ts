@@ -11,6 +11,7 @@ export const dspprocessor_process_iq_only: (a: number, b: number, c: number, d: 
 export const dspprocessor_process_iq_only_ptr: (a: number, b: number, c: number) => number;
 export const dspprocessor_process_ptr: (a: number, b: number, c: number) => number;
 export const dspprocessor_reset: (a: number) => void;
+export const dspprocessor_set_audio_filters: (a: number, b: number, c: number) => void;
 export const dspprocessor_set_bandwidth: (a: number, b: number) => void;
 export const dspprocessor_set_if_sample_rate: (a: number, b: number) => void;
 export const dspprocessor_set_shift: (a: number, b: number, c: number) => void;

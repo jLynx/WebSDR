@@ -107,6 +107,14 @@ class DspProcessor {
         wasm.dspprocessor_reset(this.__wbg_ptr);
     }
     /**
+     * Enable or disable audio filters (LowPass, HighPass) for NFM.
+     * @param {boolean} low_pass
+     * @param {boolean} high_pass
+     */
+    set_audio_filters(low_pass, high_pass) {
+        wasm.dspprocessor_set_audio_filters(this.__wbg_ptr, low_pass, high_pass);
+    }
+    /**
      * Update the channel bandwidth and rebuild filters.
      * @param {number} bandwidth
      */

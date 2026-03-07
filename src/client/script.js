@@ -545,6 +545,8 @@ createApp({
 				this.audioRingPos += toCopy;
 				srcOffset += toCopy;
 
+				this.audioRingSize = (this.audioRingPos / SCHEDULE_THRESHOLD).toFixed(2);
+
 				if (this.audioRingPos >= SCHEDULE_THRESHOLD) {
 					this._scheduleAudioChunk(this.audioRingBuf.slice(0, this.audioRingPos));
 					this.audioRingPos = 0;
@@ -566,6 +568,8 @@ createApp({
 			}
 			src.start(this.nextPlayTime);
 			this.nextPlayTime += buffer.duration;
+
+			this.queuedAudioSched = (this.nextPlayTime - this.audioCtx.currentTime).toFixed(2);
 		},
 		updateBackendVfoParams(index) {
 			if (this.backend && this.running && index >= 0 && index < this.vfos.length) {
