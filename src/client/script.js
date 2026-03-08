@@ -93,6 +93,9 @@ createApp({
 			fps: 0,
 			vfoSquelchOpen: [],  // per-VFO squelch activity indicator
 			vfoSquelchHangUntil: [], // per-VFO timestamp until which we hang the UI open
+			vfoActivityStats: [],    // per-VFO { count, totalMs, squelchOpenSince } — frequency activity tracker
+			activityNow: 0,          // reactive tick updated by stats timer to refresh activity panel
+			showActivity: false,
 			view: {
 				zoomScale: 1.0,
 				zoomOffset: 0.0,
@@ -170,6 +173,22 @@ createApp({
 			}
 			return active;
 		},
+		// VFOs with squelch enabled, sorted by total squelch-open time (most active first)
+		sortedVfoActivity() {
+			const now = this.activityNow || Date.now();
+			const items = this.vfos.map((vfo, i) => {
+				if (!vfo.squelchEnabled) return null;
+				const stat = this.vfoActivityStats[i] || { count: 0, totalMs: 0, squelchOpenSince: null };
+				const liveMs = stat.squelchOpenSince ? (now - stat.squelchOpenSince) : 0;
+				const totalMs = stat.totalMs + liveMs;
+				return { index: i, vfo, count: stat.count, totalMs, isLive: !!stat.squelchOpenSince };
+			}).filter(Boolean);
+			items.sort((a, b) => b.totalMs - a.totalMs);
+			// Compute pct relative to top entry
+			const maxMs = items[0]?.totalMs || 1;
+			for (const item of items) item.pct = (item.totalMs / maxMs) * 100;
+			return items;
+		},
 		// Individual bookmarks grouped by category; group bookmarks as a flat sorted list
 		bookmarkGroupsByCategory() {
 			const search = (this.bookmarkSearch || '').toLowerCase().trim();
@@ -232,6 +251,22 @@ createApp({
 			if (!mhz) return "000.000000";
 			let s = mhz.toFixed(6);
 			return s.padStart(10, '0');
+		},
+		// Format a duration in milliseconds as a human-readable string (e.g. "2m 05s")
+		formatActivityDuration(ms) {
+			if (ms < 1000) return ms > 0 ? '<1s' : '0s';
+			const totalSec = Math.floor(ms / 1000);
+			const h = Math.floor(totalSec / 3600);
+			const m = Math.floor((totalSec % 3600) / 60);
+			const s = totalSec % 60;
+			if (h > 0) return `${h}h ${String(m).padStart(2, '0')}m ${String(s).padStart(2, '0')}s`;
+			if (m > 0) return `${m}m ${String(s).padStart(2, '0')}s`;
+			return `${s}s`;
+		},
+		// Wipe all accumulated activity statistics
+		resetActivityStats() {
+			this.vfoActivityStats = [];
+			this.activityNow = Date.now();
 		},
 		vfoColor(index) {
 			return VFO_COLORS[index % VFO_COLORS.length];
@@ -388,6 +423,31 @@ createApp({
 							}
 						}
 						this.vfoSquelchOpen = squelchStates;
+						// ── Frequency activity tracker ──
+						// Uses raw (pre-hang) states to count true squelch-open events
+						const rawOpen = this.dspStats.squelchOpen;
+						for (let i = 0; i < rawOpen.length; i++) {
+							if (!this.vfoActivityStats[i]) {
+								this.vfoActivityStats[i] = { count: 0, totalMs: 0, squelchOpenSince: null };
+							}
+							const stat = this.vfoActivityStats[i];
+							// Only track activity for VFOs that are not muted
+							if (rawOpen[i] && this.vfos[i]?.enabled) {
+								if (stat.squelchOpenSince === null) {
+									// Squelch just opened – start a new event
+									stat.squelchOpenSince = now;
+									stat.count++;
+								}
+							} else {
+								if (stat.squelchOpenSince !== null) {
+									// Squelch just closed – accumulate duration
+									stat.totalMs += now - stat.squelchOpenSince;
+									stat.squelchOpenSince = null;
+								}
+							}
+						}
+						// Bump reactive tick so sortedVfoActivity recomputes
+						this.activityNow = now;
 					}
 				}
 			}, 500);

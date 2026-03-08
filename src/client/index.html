@@ -56,6 +56,9 @@
 				<button class="icon-btn" @click="togglePocsagPanel" :class="{ active: pocsag.panelOpen }" title="POCSAG Pager Decoder">
 					<svg viewBox="0 0 24 24" width="24" height="24"><path fill="currentColor" d="M20 2H4c-1.1 0-2 .9-2 2v18l4-4h14c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2zm-3 12H7v-2h10v2zm0-3H7V9h10v2zm0-3H7V6h10v2z"/></svg>
 				</button>
+				<button class="icon-btn" @click="showActivity = !showActivity" :class="{ active: showActivity }" title="Frequency Activity Tracker">
+					<svg viewBox="0 0 24 24" width="24" height="24"><path fill="currentColor" d="M3.5 18.49l6-6.01 4 4L22 6.92l-1.41-1.41-7.09 7.97-4-4L2 16.99l1.5 1.5z"/></svg>
+				</button>
 			</div>
 		</div>
 
@@ -476,6 +479,51 @@
 					<span class="pocsag-baud" v-if="entry.baud">{{ entry.baud }}Bd</span>
 					<span class="pocsag-text" v-if="entry.text">{{ entry.text }}</span>
 					<span class="pocsag-text pocsag-tone" v-else>(tone only)</span>
+				</div>
+			</div>
+		</div>
+
+		<!-- Frequency Activity Panel -->
+		<div class="activity-panel" v-if="showActivity">
+			<div class="activity-header">
+				<div class="activity-title">
+					<svg viewBox="0 0 24 24" width="15" height="15" style="vertical-align:middle;margin-right:4px"><path fill="currentColor" d="M3.5 18.49l6-6.01 4 4L22 6.92l-1.41-1.41-7.09 7.97-4-4L2 16.99l1.5 1.5z"/></svg>
+					Frequency Activity
+					<span class="activity-count" v-if="sortedVfoActivity.some(a => a.totalMs > 0 || a.isLive)">
+						{{ sortedVfoActivity.filter(a => a.totalMs > 0 || a.isLive).length }} active
+					</span>
+				</div>
+				<div class="activity-controls">
+					<button class="btn transcript-btn" @click="resetActivityStats" title="Reset all statistics">Reset</button>
+				</div>
+			</div>
+			<div class="activity-body">
+				<div v-if="sortedVfoActivity.length === 0" class="activity-empty">
+					Enable squelch on VFOs to track their activity here.
+				</div>
+				<div v-else-if="!sortedVfoActivity.some(a => a.totalMs > 0 || a.isLive)" class="activity-empty">
+					Listening… activity will appear here when squelch opens.
+				</div>
+				<div v-else class="activity-list">
+					<div
+						v-for="(item, rank) in sortedVfoActivity"
+						:key="'act-' + item.index"
+						class="activity-row"
+						:class="{ 'activity-row-live': item.isLive, 'activity-row-zero': !item.isLive && item.totalMs === 0 }"
+						:style="{ '--act-color': vfoColor(item.index) }"
+						@click="activeVfoIndex = item.index"
+						:title="'Click to focus VFO ' + (item.index + 1)">
+						<div class="act-bar-fill" :style="{ width: item.pct + '%' }"></div>
+						<span class="act-rank">#{{ rank + 1 }}</span>
+						<span class="act-dot" :style="{ background: vfoColor(item.index) }"></span>
+						<span class="act-vfo">VFO {{ item.index + 1 }}</span>
+						<span class="act-freq">{{ item.vfo.freq.toFixed(4) }} MHz</span>
+						<span class="act-label" v-if="vfoBookmarkLabel(item.index)">{{ vfoBookmarkLabel(item.index) }}</span>
+						<span class="act-spacer"></span>
+						<span class="act-live-badge" v-if="item.isLive">●&nbsp;LIVE</span>
+						<span class="act-count" :title="item.count + ' transmissions'">{{ item.count }}×</span>
+						<span class="act-duration">{{ formatActivityDuration(item.totalMs) }}</span>
+					</div>
 				</div>
 			</div>
 		</div>
