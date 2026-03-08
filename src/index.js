@@ -1,7 +1,7 @@
 /**
- * SDR WebViewer - Cloudflare Worker
+ * BrowSDR - Cloudflare Worker
  *
- * Serves the static SDR WebViewer frontend from the public/ directory.
+ * Serves the static BrowSDR frontend from the public/ directory.
  * All static assets (HTML, JS, CSS, WASM) are served via the ASSETS binding.
  *
  * - Run `npm run dev` to start a development server on http://localhost:8787/
@@ -20,7 +20,7 @@ export default {
 			const hfResponse = await fetch(hfUrl, {
 				method: request.method,
 				headers: {
-					'User-Agent': 'WebSDR-Worker',
+					'User-Agent': 'BrowSDR-Worker',
 				},
 			});
 

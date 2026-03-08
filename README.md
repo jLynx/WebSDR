@@ -1,6 +1,6 @@
-# 📻 WebSDR
+# 📻 BrowSDR
 
-[![WebSDR Live](https://img.shields.io/badge/Live-web--sdr.jlynx.net-success?style=for-the-badge&logo=cloudflare)](https://web-sdr.jlynx.net)
+[![BrowSDR Live](https://img.shields.io/badge/Live-browsdr.jlynx.net-success?style=for-the-badge&logo=cloudflare)](https://browsdr.jlynx.net)
 [![Rust](https://img.shields.io/badge/Rust-High%20Performance-orange?style=for-the-badge&logo=rust)](https://www.rust-lang.org/)
 [![WebAssembly](https://img.shields.io/badge/Wasm-Powered-blue?style=for-the-badge&logo=webassembly)](https://webassembly.org/)
 
