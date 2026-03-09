@@ -477,6 +477,11 @@ createApp({
 
 			this.initCanvas();
 
+			// Set running=true synchronously so drawSpectrum() isn't blocked by the
+			// `if (!this.running)` guard while we're awaiting startRxStream(). For
+			// remote clients, WebRTC FFT chunks can arrive before that await resolves.
+			this.running = true;
+
 			const opts = {
 				centerFreq: this.radio.centerFreq,
 				sampleRate: this.radio.sampleRate,
@@ -496,9 +501,9 @@ createApp({
 			} catch (e) {
 				console.error('Error starting RX stream:', e);
 				this.showMsg("Error starting stream.");
+				this.running = false;
+				return;
 			}
-
-			this.running = true;
 
 			this._statsTimer = setInterval(async () => {
 				if (this.backend && this.running) {
@@ -824,7 +829,15 @@ createApp({
 					volume: vfo.volume,
 					pocsag: vfo.pocsag,
 				};
-				this.backend.setVfoParams(index, params);
+
+				if (this.remoteMode === 'client' && this._webrtc) {
+					// In client mode the local backend has no real DSP (mock hackrf).
+					// Send the VFO params to the host over the cmd channel so the host's
+					// dedicated _remoteVfoWorker demodulates the correct frequency and mode.
+					this._webrtc.sendCommand({ type: 'vfoUpdate', params });
+				} else {
+					this.backend.setVfoParams(index, params);
+				}
 			}
 		},
 		requestOrApplyChange(target, property, value) {
@@ -1521,10 +1534,16 @@ createApp({
 			console.log("[WebRTC] Calling _webrtc.init()");
 			await this._webrtc.init();
 			console.log("[WebRTC] _webrtc.init() finished. Resolving remote host callback.");
-			// Setup worker to push raw USB chunks via Comlink callback
-			await this.backend.setRemoteHostCallback(Comlink.proxy((chunk) => {
+			// Setup worker to push FFT arrays via Comlink callback
+			await this.backend.setRemoteHostFftCallback(Comlink.proxy((chunk) => {
 				if (this._webrtc) {
-					this._webrtc.sendIqChunk(chunk);
+					this._webrtc.sendFftChunk(chunk);
+				}
+			}));
+			// Setup worker to push processed Audio buffer callbacks
+			await this.backend.setRemoteHostAudioCallback(Comlink.proxy((chunk) => {
+				if (this._webrtc) {
+					this._webrtc.sendAudioChunk(chunk);
 				}
 			}));
 		},
@@ -1554,17 +1573,39 @@ createApp({
 			};
 
 			this._webrtc.onCommand = (cmd) => this.handleRemoteCommand(cmd);
-			this._webrtc.onIqChunk = (chunk) => {
+			this._webrtc.onFftChunk = (chunk) => {
+				// Guard on _fftCtx (canvas ready) rather than this.running.
+				// this.running is set only after `await backend.startRxStream()` resolves,
+				// so frames that arrive in that async gap were silently dropped.
+				if (!this._fftCtx) return;
+				// chunk arrives as ArrayBuffer (PeerJS serialization:'raw').
+				// Guard against Uint8Array in case of fallback path: extract the true
+				// underlying bytes via byteOffset + byteLength, not numeric element cast.
+				const buf = (chunk instanceof ArrayBuffer)
+					? chunk
+					: chunk.buffer.slice(chunk.byteOffset, chunk.byteOffset + chunk.byteLength);
+				const fftData = new Float32Array(buf);
+				if (fftData.length > 0) this.drawSpectrum(fftData);
+			};
+			this._webrtc.onAudioChunk = (chunk) => {
 				if (this.running && this.backend) {
-					// Use Comlink.transfer for zero-copy memory handoff to eliminate GC lag
-					const buf = chunk.buffer || chunk;
-					this.backend.feedRemoteChunk(Comlink.transfer(chunk, [buf]));
+					// chunk arrives as ArrayBuffer (serialization:'raw').
+					// Use .slice() with byteOffset/byteLength to handle typed-array views.
+					const buf = (chunk instanceof ArrayBuffer)
+						? chunk
+						: chunk.buffer.slice(chunk.byteOffset, chunk.byteOffset + chunk.byteLength);
+					this.backend.feedRemoteAudioChunk(Comlink.transfer(buf, [buf]));
 				}
 			};
 
 			try {
-				await this._webrtc.init();
+				// initRemoteClient MUST come first — it installs the mock hackrf stub.
+				// _webrtc.init() may fire the 'connected' event synchronously, which calls
+				// startStream() -> startRxStream() -> hackrf.setSampleRateManual(). If the
+				// mock isn't in place yet, hackrf is null and the call throws, leaving
+				// this.running = false forever (all FFT frames get dropped).
 				await this.backend.initRemoteClient();
+				await this._webrtc.init();
 			} catch(e) {
 				this.showMsg("Failed to initialize remote client.");
 			}
@@ -1574,6 +1615,12 @@ createApp({
 				if (cmd.radio) Object.assign(this.radio, cmd.radio);
 				if (cmd.gains) Object.assign(this.gains, cmd.gains);
 				if (cmd.locks) Object.assign(this.locks, cmd.locks);
+			} else if (cmd.type === 'vfoUpdate') {
+				if (this.remoteMode === 'host') {
+					// Client is telling us what frequency/mode they want. Configure the
+					// dedicated remote DSP worker on the host for this client.
+					this.backend.setRemoteVfoParams(cmd.params);
+				}
 			} else if (cmd.type === 'requestChange') {
 				if (this.remoteMode === 'host') {
 					const { target, property, value } = cmd;

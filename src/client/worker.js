@@ -571,6 +571,45 @@ class Worker {
 	async setRemoteHostCallback(callback) {
 		this._remoteHostCb = callback;
 	}
+	async setRemoteHostFftCallback(callback) {
+		this._remoteHostFftCb = callback;
+	}
+	async setRemoteHostAudioCallback(callback) {
+		this._remoteHostAudioCb = callback;
+	}
+
+	// Called by the host whenever the remote client sends a vfoUpdate command.
+	// Spawns (or reconfigures) a dedicated DSP worker for the client's VFO.
+	// Audio from this worker bypasses the host's own VFO mixer and goes
+	// straight to _remoteHostAudioCb so the two VFO sets are fully independent.
+	async setRemoteVfoParams(params) {
+		this._remoteVfoParamsCurrent = params;
+
+		if (!this._remoteVfoWorker) {
+			if (!this._sampleRate || !this.sharedIqPools) return; // startRxStream not yet running
+			const worker = new globalThis.Worker('./dsp-worker.js', { type: 'module' });
+			worker.onmessage = (e) => {
+				const msg = e.data;
+				if (msg.type === 'audio' && msg.samples && this._remoteHostAudioCb) {
+					this._remoteHostAudioCb(new Float32Array(msg.samples));
+				}
+			};
+			worker.postMessage({
+				type: 'init',
+				sampleRate: this._sampleRate,
+				centerFreq: this._centerFreq,
+				params: params,
+				sabs: typeof SharedArrayBuffer !== 'undefined' ? this.sharedIqPools : null
+			});
+			this._remoteVfoWorker = worker;
+		} else {
+			this._remoteVfoWorker.postMessage({
+				type: 'configure',
+				params: params,
+				centerFreq: this._centerFreq
+			});
+		}
+	}
 
 	async initRemoteClient() {
 		await ensureWasmInitialized();
@@ -594,18 +633,20 @@ class Worker {
 		};
 	}
 
-	async feedRemoteChunk(chunk) {
-		if (this._remoteClientCb) {
-			const buf = chunk.buffer || chunk;
-			this._remoteClientCb({
-				buffer: buf,
-				byteOffset: 0,
-				length: buf.byteLength
-			});
+	async feedRemoteAudioChunk(chunk) {
+		if (this._remoteClientAudioCb) {
+			// chunk arrives as a transferred ArrayBuffer from the main thread.
+			// playAudio() requires a Float32Array — passing a raw ArrayBuffer causes
+			// the else-branch to compute length=0 and silently drop the audio.
+			const floats = (chunk instanceof Float32Array)
+				? chunk
+				: new Float32Array(chunk instanceof ArrayBuffer ? chunk : chunk.buffer);
+			this._remoteClientAudioCb(floats);
 		}
 	}
 
 	async startRxStream(opts, spectrumCallback, audioCallback, whisperCallback = null, pocsagCallback = null) {
+		this._remoteClientAudioCb = audioCallback; // Save reference for when chunk arrives
 		try {
 			const { hackrf } = this;
 			const { centerFreq, sampleRate, fftSize, lnaGain, vgaGain, ampEnabled } = opts;
@@ -1368,6 +1409,9 @@ class Worker {
 					}
 
 					if (audioCallback) audioCallback(mixed.subarray(0, minAvailable));
+					// Remote client audio is now handled exclusively by _remoteVfoWorker
+					// (spawned by setRemoteVfoParams). DO NOT send the host mixer output
+					// here — that would couple the client's audio to the host's VFO state.
 				}
 			};
 			// Expose for worker closure inside spawnWorker
@@ -1383,12 +1427,6 @@ class Worker {
 				// Write USB chunk directly to WASM memory shared buffer if using SAB
 				this.sharedIqViews[this.sabPoolIndex].set(signed);
 				chunkCounter++;
-
-				if (this._remoteHostCb) {
-					// Use Comlink.transfer to avoid copying if we are just relaying
-					const chunkCopy = new Int8Array(signed);
-					this._remoteHostCb(Comlink.transfer(chunkCopy, [chunkCopy.buffer]));
-				}
 
 				// Bulk copy for spectrum buffer
 				{
@@ -1417,7 +1455,11 @@ class Worker {
 
 								specCopy.set(spectrumOutput);
 								useFlip = !useFlip;
-								spectrumCallback(Comlink.transfer(specCopy, [specCopy.buffer]));
+
+								// Slice for remote BEFORE Comlink.transfer — transfer detaches specCopy.buffer,
+								// making any subsequent .slice() throw "detached ArrayBuffer".
+								if (this._remoteHostFftCb) this._remoteHostFftCb(specCopy.slice());
+								if (spectrumCallback) spectrumCallback(Comlink.transfer(specCopy, [specCopy.buffer]));
 							}
 						}
 					}
@@ -1435,6 +1477,18 @@ class Worker {
 						worker.postMessage({ type: 'process', params: params, useSab: false, chunk: cloneBuf, chunkLen: signed.length, chunkId: chunkCounter }, [cloneBuf]);
 					}
 				}
+
+				// Also feed the dedicated remote-client VFO worker (independent from the host mixer)
+				if (this._remoteVfoWorker) {
+					const rp = this._remoteVfoParamsCurrent;
+					if (typeof SharedArrayBuffer !== 'undefined') {
+						this._remoteVfoWorker.postMessage({ type: 'process', params: rp, useSab: true, sabIndex: this.sabPoolIndex, chunkLen: signed.length, chunkId: chunkCounter });
+					} else {
+						const rClone = signed.slice().buffer;
+						this._remoteVfoWorker.postMessage({ type: 'process', params: rp, useSab: false, chunk: rClone, chunkLen: signed.length, chunkId: chunkCounter }, [rClone]);
+					}
+				}
+
 				this.sabPoolIndex = (this.sabPoolIndex + 1) % SAB_POOL_SIZE;
 			});
 
