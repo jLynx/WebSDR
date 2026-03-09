@@ -734,20 +734,21 @@ createApp({
 				ctx.restore();
 			}
 		},
-		async toggleVfoCheckbox(index) {
+		toggleVfoCheckbox(index) {
 			const anyEnabled = this.vfos.some(v => v.enabled);
 			if (anyEnabled && !this.audioCtx) {
 				const AudioContext = window.AudioContext || window.webkitAudioContext;
 				this.audioCtx = new AudioContext({ sampleRate: 48000 });
-				if (this.audioCtx.state === 'suspended') {
-					await this.audioCtx.resume();
-				}
 				this.gainNode = this.audioCtx.createGain();
 				this.gainNode.gain.value = 1.0; // Volume is handled per-VFO in worker
 				this.gainNode.connect(this.audioCtx.destination);
 				this.nextPlayTime = 0;
 				this.audioRingBuf = new Float32Array(4800);
 				this.audioRingPos = 0;
+				
+				if (this.audioCtx.state === 'suspended') {
+					this.audioCtx.resume().catch(e => console.warn("AudioContext resume blocked:", e));
+				}
 			}
 			this.updateBackendVfoParams(index);
 		},
@@ -824,13 +825,6 @@ createApp({
 					pocsag: vfo.pocsag,
 				};
 				this.backend.setVfoParams(index, params);
-				if (this.remoteMode === 'client' && this._webrtc) {
-					this._webrtc.sendCommand({ type: 'vfo', index, params });
-				} else if (this.remoteMode === 'host' && this._webrtc) {
-					// Host can also sync VFO changes *to* the client if desired, 
-					// but usually Client drives or they follow each other. Let's sync to client.
-					this._webrtc.sendCommand({ type: 'vfo', index, params });
-				}
 			}
 		},
 		requestOrApplyChange(target, property, value) {
@@ -850,7 +844,6 @@ createApp({
 			if (this.backend && this.running) {
 				await this.backend.addVfo();
 				this.updateBackendVfoParams(this.vfos.length - 1);
-				if (this._webrtc) this._webrtc.sendCommand({ type: 'addVfo' });
 			}
 			this.activeVfoIndex = this.vfos.length - 1;
 
@@ -865,7 +858,6 @@ createApp({
 			this.vfos.splice(index, 1);
 			if (this.backend && this.running) {
 				await this.backend.removeVfo(index);
-				if (this._webrtc) this._webrtc.sendCommand({ type: 'removeVfo', index });
 			}
 			if (this.activeVfoIndex >= this.vfos.length) {
 				this.activeVfoIndex = this.vfos.length - 1;
@@ -1514,7 +1506,7 @@ createApp({
 					this.remoteStatus = 'Client connected';
 					this.showMsg("Remote client joined!");
 					// Sync current state to client
-					this._webrtc.sendCommand({ type: 'sync', radio: this.radio, gains: this.gains, vfos: this.vfos, locks: this.locks });
+					this._webrtc.sendCommand({ type: 'sync', radio: this.radio, gains: this.gains, locks: this.locks });
 				} else if (status.status === 'disconnected') {
 					this.remoteStatus = 'Client disconnected';
 					this.showMsg("Remote client left.");
@@ -1549,7 +1541,7 @@ createApp({
 					this.remoteStatus = 'Connected to Host';
 					this.connected = true;
 					this.info.boardName = "Remote SDR";
-					this.showMsg("Connected to Host successfully");
+					this.showMsg("Connected! Click anywhere to unmute audio.");
 					// Start local processing stream using mock device hooked up to WebRTC
 					this.startStream();
 				} else if (status.status === 'disconnected') {
@@ -1579,9 +1571,6 @@ createApp({
 			if (cmd.type === 'sync') {
 				if (cmd.radio) Object.assign(this.radio, cmd.radio);
 				if (cmd.gains) Object.assign(this.gains, cmd.gains);
-				if (cmd.vfos) {
-					this.vfos = cmd.vfos;
-				}
 				if (cmd.locks) Object.assign(this.locks, cmd.locks);
 			} else if (cmd.type === 'requestChange') {
 				if (this.remoteMode === 'host') {
@@ -1605,15 +1594,6 @@ createApp({
 						this._webrtc.sendCommand({ type: 'sync', radio: this.radio, gains: this.gains });
 					}
 				}
-			} else if (cmd.type === 'vfo') {
-				if (this.vfos[cmd.index]) {
-					Object.assign(this.vfos[cmd.index], cmd.params);
-				}
-			} else if (cmd.type === 'addVfo') {
-				const newVfo = makeDefaultVfo(this.radio.centerFreq);
-				this.vfos.push(newVfo);
-			} else if (cmd.type === 'removeVfo') {
-				this.vfos.splice(cmd.index, 1);
 			}
 		}
 	},
@@ -1699,6 +1679,14 @@ createApp({
 		}, { deep: true });
 	},
 	mounted() {
+		const resumeAudio = () => {
+			if (this.audioCtx && this.audioCtx.state === 'suspended') {
+				this.audioCtx.resume().catch(() => {});
+			}
+		};
+		document.body.addEventListener('click', resumeAudio, { passive: true });
+		document.body.addEventListener('touchstart', resumeAudio, { passive: true });
+
 		// Event listeners for tuning on canvas
 		let isDraggingVFO = false;
 		let isPanning = false;
