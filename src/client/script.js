@@ -1549,11 +1549,34 @@ createApp({
 			console.log("[WebRTC] Calling _webrtc.init()");
 			await this._webrtc.init();
 			console.log("[WebRTC] _webrtc.init() finished. Resolving remote host callback.");
-			// Setup worker to push FFT arrays via Comlink callback
+			// Setup worker to push FFT arrays via Comlink callback.
+			// KiwiSDR-style compression: downsample to WF_REMOTE_BINS and quantize
+			// each bin's dB value to a uint8 (1 dB/step, WF_DB_MIN offset).
+			// This reduces bandwidth from ~5 MB/s (65536 Float32 @ 20fps) to
+			// ~40 KB/s (2048 uint8 @ 20fps) — a ~128× reduction that prevents the
+			// DataChannel from saturating and the waterfall from freezing.
+			const WF_REMOTE_BINS = 2048;
+			const WF_DB_MIN = -120.0; // uint8 0 ↔ -120 dBfs, 1 dB per LSB
 			await this.backend.setRemoteHostFftCallback(Comlink.proxy((chunk) => {
-				if (this._webrtc) {
-					this._webrtc.sendFftChunk(chunk);
+				if (!this._webrtc) return;
+				const bins = WF_REMOTE_BINS;
+				const factor = chunk.length / bins;
+				// 4-byte header: 0xFF 0xDA (magic) + uint16-LE bin count
+				const pkt = new Uint8Array(4 + bins);
+				pkt[0] = 0xFF; pkt[1] = 0xDA;
+				pkt[2] = bins & 0xFF; pkt[3] = (bins >> 8) & 0xFF;
+				for (let i = 0; i < bins; i++) {
+					// Max-hold downsample (same as local waterfall renderSize path)
+					let maxVal = -1e9;
+					const s = Math.floor(i * factor);
+					const e = Math.floor((i + 1) * factor);
+					for (let j = s; j < e; j++) {
+						if (chunk[j] > maxVal) maxVal = chunk[j];
+					}
+					// Clamp to [0..255]: 0 = WF_DB_MIN (-120 dB), 255 = -120+255 = +135 dB
+					pkt[4 + i] = Math.max(0, Math.min(255, Math.round(maxVal - WF_DB_MIN)));
 				}
+				this._webrtc.sendFftChunk(pkt);
 			}));
 			// Setup worker to push processed Audio buffer callbacks
 			await this.backend.setRemoteHostAudioCallback(Comlink.proxy((chunk) => {
@@ -1599,7 +1622,21 @@ createApp({
 				const buf = (chunk instanceof ArrayBuffer)
 					? chunk
 					: chunk.buffer.slice(chunk.byteOffset, chunk.byteOffset + chunk.byteLength);
-				const fftData = new Float32Array(buf);
+				const u8 = new Uint8Array(buf);
+				let fftData;
+				if (u8.length >= 4 && u8[0] === 0xFF && u8[1] === 0xDA) {
+					// KiwiSDR-style quantized packet: 4-byte header + N uint8 bins.
+					// Unpack: uint8 → Float32 dB using WF_DB_MIN + uint8 value (1 dB/step).
+					const WF_DB_MIN = -120.0;
+					const binCount = u8[2] | (u8[3] << 8);
+					fftData = new Float32Array(binCount);
+					for (let i = 0; i < binCount; i++) {
+						fftData[i] = WF_DB_MIN + u8[4 + i];
+					}
+				} else {
+					// Legacy fallback: raw Float32 (old host)
+					fftData = new Float32Array(buf);
+				}
 				if (fftData.length > 0) this.drawSpectrum(fftData);
 			};
 			this._webrtc.onAudioChunk = (chunk) => {
