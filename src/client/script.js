@@ -172,6 +172,10 @@ createApp({
 		};
 	},
 	computed: {
+		isLocal() {
+			const host = window.location.hostname;
+			return host === 'localhost' || host === '127.0.0.1';
+		},
 		activeAudioVfos() {
 			const active = [];
 			for (let i = 0; i < this.vfos.length; i++) {

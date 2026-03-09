@@ -97,7 +97,7 @@
 						<div class="form-row" style="flex-direction: column; gap: 8px;">
 							<template v-if="!connected && remoteMode !== 'client'">
 								<button class="btn btn-primary" @click="connect">Connect Device</button>
-								<button class="btn btn-secondary" @click="connectMock">Connect Mock SDR</button>
+								<button class="btn btn-secondary" v-if="isLocal" @click="connectMock">Connect Mock SDR</button>
 							</template>
 							<button class="btn" v-else @click="disconnect">{{ remoteMode === 'client' ? 'Disconnect Remote' : 'Disconnect' }}</button>
 						</div>
