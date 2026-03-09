@@ -756,6 +756,15 @@
 			</div>
 		</div>
 
+		<!-- Audio unlock overlay (shown when auto-connecting via URL, browser requires a user gesture) -->
+		<div class="audio-unlock-overlay" v-if="audioUnlockPendingId" @click="unlockAndConnect">
+			<div class="audio-unlock-box">
+				<svg viewBox="0 0 24 24" width="48" height="48"><path fill="currentColor" d="M3 9v6h4l5 5V4L7 9H3zm13.5 3c0-1.77-1.02-3.29-2.5-4.03v8.05c1.48-.73 2.5-2.25 2.5-4.02zM14 3.23v2.06c2.89.86 5 3.54 5 6.71s-2.11 5.85-5 6.71v2.06c4.01-.91 7-4.49 7-8.77s-2.99-7.86-7-8.77z"/></svg>
+				<div class="audio-unlock-title">Click to Enable Audio</div>
+				<div class="audio-unlock-sub">Connecting in background&hellip;</div>
+			</div>
+		</div>
+
 		<!-- Dialogs -->
 		<div class="snackbar" :class="{ show: snackbar.show }">{{ snackbar.message }}</div>
 	</div>

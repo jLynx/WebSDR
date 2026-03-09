@@ -1817,3 +1817,45 @@ canvas {
 	min-width: 60px;
 	text-align: right;
 }
+
+/* ────── Audio Unlock Overlay ────── */
+.audio-unlock-overlay {
+	position: fixed;
+	inset: 0;
+	z-index: 9999;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	background: rgba(0, 0, 0, 0.82);
+	cursor: pointer;
+	animation: unlock-fade-in 0.2s ease;
+}
+@keyframes unlock-fade-in {
+	from { opacity: 0; }
+	to   { opacity: 1; }
+}
+.audio-unlock-box {
+	display: flex;
+	flex-direction: column;
+	align-items: center;
+	gap: 12px;
+	color: #fff;
+	user-select: none;
+	animation: unlock-pop 0.25s cubic-bezier(0.34,1.56,0.64,1);
+}
+@keyframes unlock-pop {
+	from { transform: scale(0.85); opacity: 0; }
+	to   { transform: scale(1);    opacity: 1; }
+}
+.audio-unlock-box svg {
+	opacity: 0.9;
+}
+.audio-unlock-title {
+	font-size: 22px;
+	font-weight: 600;
+	letter-spacing: 0.5px;
+}
+.audio-unlock-sub {
+	font-size: 13px;
+	opacity: 0.6;
+}

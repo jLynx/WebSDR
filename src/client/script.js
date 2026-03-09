@@ -75,6 +75,7 @@ createApp({
 			remoteLink: '',
 			remotePeerId: '',
 			snackbar: { show: false, message: "" },
+			audioUnlockPendingId: null,
 			radio: {
 				centerFreq: 100.0,
 				sampleRate: 8000000,
@@ -388,8 +389,28 @@ createApp({
 			this.snackbar.show = true;
 			setTimeout(() => { this.snackbar.show = false; }, 3000);
 		},
+		unlockAndConnect() {
+			this.audioUnlockPendingId = null;
+			this._initAudioCtx();
+		},
+		_initAudioCtx() {
+			if (!this.audioCtx) {
+				const AudioContext = window.AudioContext || window.webkitAudioContext;
+				this.audioCtx = new AudioContext({ sampleRate: 48000 });
+				this.gainNode = this.audioCtx.createGain();
+				this.gainNode.gain.value = 1.0;
+				this.gainNode.connect(this.audioCtx.destination);
+				this.nextPlayTime = 0;
+				this.audioRingBuf = new Float32Array(4800);
+				this.audioRingPos = 0;
+			}
+			if (this.audioCtx.state === 'suspended') {
+				this.audioCtx.resume().catch(e => console.warn('AudioContext resume blocked:', e));
+			}
+		},
 		async connect() {
 			if (!this.backend) return;
+			this._initAudioCtx(); // create AudioContext within user gesture
 			this.showMsg("Connecting...");
 			try {
 				let ok = await this.backend.open();
@@ -417,6 +438,7 @@ createApp({
 		},
 		async connectMock() {
 			if (!this.backend) return;
+			this._initAudioCtx(); // create AudioContext within user gesture
 			this.showMsg("Connecting Mock SDR...");
 			try {
 				const ok = await this.backend.open("mock");
@@ -760,25 +782,17 @@ createApp({
 		},
 		toggleVfoCheckbox(index) {
 			const anyEnabled = this.vfos.some(v => v.enabled);
-			if (anyEnabled && !this.audioCtx) {
-				const AudioContext = window.AudioContext || window.webkitAudioContext;
-				this.audioCtx = new AudioContext({ sampleRate: 48000 });
-				this.gainNode = this.audioCtx.createGain();
-				this.gainNode.gain.value = 1.0; // Volume is handled per-VFO in worker
-				this.gainNode.connect(this.audioCtx.destination);
-				this.nextPlayTime = 0;
-				this.audioRingBuf = new Float32Array(4800);
-				this.audioRingPos = 0;
-				
-				if (this.audioCtx.state === 'suspended') {
-					this.audioCtx.resume().catch(e => console.warn("AudioContext resume blocked:", e));
-				}
+			if (anyEnabled) {
+				this._initAudioCtx();
 			}
 			this.updateBackendVfoParams(index);
 		},
 		playAudio(samples) {
 			if (!this.vfos.some(v => v.enabled) || !this.audioCtx) return;
-			if (this.audioCtx.state === 'suspended') return;
+			if (this.audioCtx.state === 'suspended') {
+				this.audioCtx.resume().catch(() => {});
+				return;
+			}
 
 			let floats;
 			if (samples instanceof Float32Array) floats = samples;
@@ -1600,6 +1614,7 @@ createApp({
 			}));
 		},
 		async connectRemoteClient(hostId) {
+			this._initAudioCtx(); // create AudioContext within user gesture before any await
 			this.remoteMode = 'client';
 			this.remoteStatus = 'Connecting...';
 			this.showMsg("Connecting to remote host...");
@@ -1612,7 +1627,7 @@ createApp({
 					this.remoteStatus = 'Connected to Host';
 					this.connected = true;
 					this.info.boardName = "Remote SDR";
-					this.showMsg("Connected! Click anywhere to unmute audio.");
+					this.showMsg("Connected to remote host.");
 					// Start local processing stream using mock device hooked up to WebRTC
 					this.startStream();
 				} else if (status.status === 'disconnected') {
@@ -1913,10 +1928,10 @@ createApp({
 		const urlParams = new URLSearchParams(window.location.search);
 		const connectId = urlParams.get('connect');
 		if (connectId) {
-			// Auto-connect after brief delay to ensure components loaded
-			setTimeout(() => {
-				this.connectRemoteClient(connectId);
-			}, 500);
+			// Start connecting immediately in the background.
+			setTimeout(() => this.connectRemoteClient(connectId), 500);
+			// Show overlay so the user provides a click gesture to unlock AudioContext.
+			this.audioUnlockPendingId = connectId;
 		}
 	}
 }).mount('#app');
