@@ -776,6 +776,11 @@
 						<div v-for="client in remoteClients" :key="client.id" class="remote-client-item">
 							<div class="remote-client-info">
 								<div class="remote-client-id">{{ client.id.substring(0, 12) }}</div>
+								<div class="remote-client-meta">
+									<span v-if="client.country" class="remote-client-country">{{ client.country }}</span>
+									<span v-if="client.firstFreq !== null" class="remote-client-freq">{{ formatFreq(client.firstFreq) }} MHz</span>
+									<span class="remote-client-vfos">{{ client.vfoCount }} VFO{{ client.vfoCount !== 1 ? 's' : '' }}</span>
+								</div>
 								<div class="remote-client-duration">Connected {{ remoteClientDuration(client.connectedAt) }}</div>
 							</div>
 							<button class="btn btn-kick" @click="kickRemoteClient(client.id)">Kick</button>

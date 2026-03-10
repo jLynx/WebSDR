@@ -12,6 +12,14 @@ export default {
 	async fetch(request, env, ctx) {
 		const url = new URL(request.url);
 
+		// Return the caller's country code (from Cloudflare headers)
+		if (url.pathname === '/api/geo') {
+			return new Response(
+				JSON.stringify({ country: request.headers.get('CF-IPCountry') || 'XX' }),
+				{ headers: { 'Content-Type': 'application/json' } }
+			);
+		}
+
 		// Proxy HuggingFace model downloads to avoid CORS issues
 		if (url.pathname.startsWith('/hf-proxy/')) {
 			const hfPath = url.pathname.slice('/hf-proxy/'.length) + url.search;

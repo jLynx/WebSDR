@@ -93,7 +93,6 @@ body {
 	border: 1px solid var(--border);
 	border-radius: 4px;
 	padding: 4px 8px;
-	margin-right: 16px;
 	font-size: 12px;
 	font-weight: 600;
 	flex-shrink: 0;
@@ -1519,6 +1518,23 @@ canvas {
 	white-space: nowrap;
 	overflow: hidden;
 	text-overflow: ellipsis;
+}
+.remote-client-meta {
+	display: flex;
+	gap: 8px;
+	font-size: 11px;
+	color: var(--text-dim);
+	flex-wrap: wrap;
+}
+.remote-client-meta span {
+	white-space: nowrap;
+}
+.remote-client-country {
+	font-weight: 600;
+	color: var(--accent);
+}
+.remote-client-freq {
+	font-family: monospace;
 }
 .remote-client-duration {
 	font-size: 11px;

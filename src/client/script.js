@@ -1570,7 +1570,7 @@ createApp({
 					console.log("[WebRTC] Link completely generated:", this.remoteLink);
 				} else if (status.status === 'client-connected') {
 					const clientId = status.clientId;
-					this.remoteClients.push({ id: clientId, connectedAt: Date.now() });
+					this.remoteClients.push({ id: clientId, connectedAt: Date.now(), country: '', vfoCount: 1, firstFreq: null });
 					this.remoteStatus = this.remoteClients.length + ' client' + (this.remoteClients.length !== 1 ? 's' : '') + ' connected';
 					this.showMsg("Remote client joined!");
 					// Register client in worker and sync current state
@@ -1648,6 +1648,10 @@ createApp({
 					this.connected = true;
 					this.info.boardName = "Remote SDR";
 					this.showMsg("Connected to remote host.");
+					// Send country info to host
+					fetch('/api/geo').then(r => r.json()).then(data => {
+						if (this._webrtc) this._webrtc.sendCommand({ type: 'clientInfo', country: data.country || 'XX' });
+					}).catch(() => {});
 					// Start local processing stream using mock device hooked up to WebRTC
 					this.startStream();
 				} else if (status.status === 'disconnected') {
@@ -1726,17 +1730,30 @@ createApp({
 				if (cmd.radio) Object.assign(this.radio, cmd.radio);
 				if (cmd.gains) Object.assign(this.gains, cmd.gains);
 				if (cmd.locks) Object.assign(this.locks, cmd.locks);
+			} else if (cmd.type === 'clientInfo') {
+				if (this.remoteMode === 'host' && clientId) {
+					const rc = this.remoteClients.find(c => c.id === clientId);
+					if (rc) rc.country = cmd.country || 'XX';
+				}
 			} else if (cmd.type === 'vfoUpdate') {
 				if (this.remoteMode === 'host' && clientId) {
 					this.backend.setRemoteVfoParams(clientId, cmd.index, cmd.params);
+					if (cmd.index === 0 && cmd.params) {
+						const rc = this.remoteClients.find(c => c.id === clientId);
+						if (rc) rc.firstFreq = cmd.params.freq;
+					}
 				}
 			} else if (cmd.type === 'addRemoteVfo') {
 				if (this.remoteMode === 'host' && clientId) {
 					this.backend.addRemoteVfo(clientId);
+					const rc = this.remoteClients.find(c => c.id === clientId);
+					if (rc) rc.vfoCount++;
 				}
 			} else if (cmd.type === 'removeRemoteVfo') {
 				if (this.remoteMode === 'host' && clientId) {
 					this.backend.removeRemoteVfo(clientId, cmd.index);
+					const rc = this.remoteClients.find(c => c.id === clientId);
+					if (rc && rc.vfoCount > 0) rc.vfoCount--;
 				}
 			} else if (cmd.type === 'requestChange') {
 				if (this.remoteMode === 'host') {
