@@ -621,7 +621,15 @@ class Worker {
 
 	async setRemoteVfoParams(clientId, index, params) {
 		const state = this._getOrCreateClientState(clientId);
+		const wasEnabled = state.params[index] && state.params[index].enabled;
 		state.params[index] = params;
+
+		// Flush accumulated audio when a VFO is muted or re-enabled to prevent
+		// a huge backlog from being dumped at once (which exceeds the data
+		// channel's max message size and crashes the WebRTC connection).
+		if (state.audioQueues[index] && (!params.enabled || (params.enabled && !wasEnabled))) {
+			state.audioQueues[index].len = 0;
+		}
 
 		if (!state.workers[index]) {
 			if (!this._sampleRate || !this.sharedIqPools) return;
@@ -702,6 +710,10 @@ class Worker {
 			active.push({ q, p });
 		}
 		if (!active.length || minAvailable < BATCH || minAvailable === Infinity) return;
+		// Cap to prevent sending oversized chunks that exceed the data channel's
+		// max message size (~256KB SCTP) and crash the WebRTC connection.
+		const MAX_CHUNK = 4800; // 100ms at 48kHz
+		if (minAvailable > MAX_CHUNK) minAvailable = MAX_CHUNK;
 		if (!state.mixBuf || state.mixBuf.length < minAvailable) {
 			state.mixBuf = new Float32Array(minAvailable + 1024);
 		}
