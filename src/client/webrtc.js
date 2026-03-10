@@ -104,7 +104,7 @@ export class WebRTCHandler {
 						const isRelay = localCandidate.candidateType === 'relay';
 						const label = clientId ? clientId.substring(0, 8) : 'host';
 						if (isRelay) {
-							console.warn(`[WebRTC] Client ${label} is using TURN relay (Cloudflare)`);
+							console.warn(`[WebRTC] Client ${label} is using TURN relay`);
 						} else {
 							console.log(`[WebRTC] Client ${label} is connected peer-to-peer (${localCandidate.candidateType})`);
 						}

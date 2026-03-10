@@ -1730,9 +1730,11 @@ createApp({
 			}
 
 			if (cmd.type === 'sync') {
+				this._applyingSync = true;
 				if (cmd.radio) Object.assign(this.radio, cmd.radio);
 				if (cmd.gains) Object.assign(this.gains, cmd.gains);
 				if (cmd.locks) Object.assign(this.locks, cmd.locks);
+				this.$nextTick(() => { this._applyingSync = false; });
 			} else if (cmd.type === 'clientInfo') {
 				if (this.remoteMode === 'host' && clientId) {
 					const rc = this.remoteClients.find(c => c.id === clientId);
@@ -1818,14 +1820,10 @@ createApp({
 			this.applyZoomToEngine();
 
 			if (this.remoteMode === 'client') {
-				// We don't want to restart the stream purely client-side unless the host tells us to via a sync.
-				// However, if the client modifies the radio, they are requesting a change. We intercept the UI change.
-				// This watch fires *after* the UI modifies `this.radio`. Wait, `this.radio` is already modified here.
-				// To intercept correctly, we should have the UI call a method rather than v-model directly,
-				// OR we can observe changes, revert them visually if locked, and send the request.
-				// For now, since `radio` is modified, we just send a sync request if client.
-				this._webrtc.sendCommand({ type: 'requestChange', target: 'radio', property: 'centerFreq', value: this.radio.centerFreq });
-				this._webrtc.sendCommand({ type: 'requestChange', target: 'radio', property: 'sampleRate', value: this.radio.sampleRate });
+				if (!this._applyingSync) {
+					this._webrtc.sendCommand({ type: 'requestChange', target: 'radio', property: 'centerFreq', value: this.radio.centerFreq });
+					this._webrtc.sendCommand({ type: 'requestChange', target: 'radio', property: 'sampleRate', value: this.radio.sampleRate });
+				}
 				return;
 			}
 
@@ -1833,29 +1831,36 @@ createApp({
 				await this.togglePlay();
 				await this.togglePlay();
 			}
+
+			// Broadcast updated radio settings to all remote clients
+			if (this.remoteMode === 'host' && this._webrtc) {
+				this._webrtc.sendCommand({ type: 'sync', radio: this.radio, gains: this.gains, locks: this.locks });
+			}
 		}, { deep: true });
 
 		this.$watch('gains', () => {
 			if (this.remoteMode === 'client') {
-				this._webrtc.sendCommand({ type: 'requestChange', target: 'gains', property: 'lna', value: this.gains.lna });
-				this._webrtc.sendCommand({ type: 'requestChange', target: 'gains', property: 'vga', value: this.gains.vga });
-				this._webrtc.sendCommand({ type: 'requestChange', target: 'gains', property: 'ampEnabled', value: this.gains.ampEnabled });
+				if (!this._applyingSync) {
+					this._webrtc.sendCommand({ type: 'requestChange', target: 'gains', property: 'lna', value: this.gains.lna });
+					this._webrtc.sendCommand({ type: 'requestChange', target: 'gains', property: 'vga', value: this.gains.vga });
+					this._webrtc.sendCommand({ type: 'requestChange', target: 'gains', property: 'ampEnabled', value: this.gains.ampEnabled });
+				}
 				return;
 			}
 
 			if (this.running && this.connected) {
-				// We don't have individual gain methods anymore since they were removed.
-				// However, changing startRxStream will re-apply gains. Or we can just restart.
-				// Wait actually I never removed them, they are back in worker.js! But they aren't exposed in worker.js.
-				// It's safest to just restart the stream since we are using DDC anyway, 
-				// but actually restarting isn't ideal. Let me just leave this.
-				// Actually they ARE exposed by `Comlink` directly grabbing the methods.
 				if (this.backend.setAmpEnable) {
 					this.backend.setAmpEnable(this.gains.ampEnabled);
 					this.backend.setLnaGain(this.gains.lna);
 					this.backend.setVgaGain(this.gains.vga);
 				}
 			}
+
+			// Broadcast updated gains to all remote clients
+			if (this.remoteMode === 'host' && this._webrtc) {
+				this._webrtc.sendCommand({ type: 'sync', gains: this.gains, locks: this.locks });
+			}
+
 			this.saveSetting();
 		}, { deep: true });
 
