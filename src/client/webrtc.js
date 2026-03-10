@@ -29,14 +29,30 @@ export class WebRTCHandler {
 			return false;
 		}
 
+		// Fetch TURN credentials from our Cloudflare Worker endpoint
+		let peerConfig = undefined;
+		try {
+			const turnResp = await fetch('/api/turn');
+			const turnData = await turnResp.json();
+			if (turnData.iceServers && turnData.iceServers.length > 0) {
+				peerConfig = { iceServers: turnData.iceServers };
+				console.log('[WebRTC] TURN credentials loaded, ICE servers:', turnData.iceServers.length);
+			} else {
+				console.warn('[WebRTC] No TURN servers available, using STUN only (may fail behind symmetric NAT)');
+			}
+		} catch (err) {
+			console.warn('[WebRTC] Failed to fetch TURN credentials, using STUN only:', err.message);
+		}
+
 		return new Promise((resolve, reject) => {
+			const peerOpts = peerConfig ? { config: peerConfig } : {};
 			if (this.isHost) {
 				// Host generates a random alphabet id
 				const id = 'browsdr-' + Math.random().toString(36).substring(2, 8);
-				this.peer = new window.Peer(id);
+				this.peer = new window.Peer(id, peerOpts);
 			} else {
 				// Client generates random id, will connect to this.remoteId
-				this.peer = new window.Peer();
+				this.peer = new window.Peer(undefined, peerOpts);
 			}
 
 			this.peer.on('open', (id) => {
@@ -76,7 +92,34 @@ export class WebRTCHandler {
 		if (this.onStatusChange) this.onStatusChange(msgObj);
 	}
 
+	_monitorIceState(conn, label, side) {
+		// PeerJS exposes the underlying RTCPeerConnection once the connection is negotiated
+		const check = () => {
+			const pc = conn.peerConnection;
+			if (!pc) {
+				// peerConnection not yet available, retry shortly
+				setTimeout(check, 200);
+				return;
+			}
+			console.log(`[${side}] ${label} ICE: ${pc.iceConnectionState}, signaling: ${pc.signalingState}, gathering: ${pc.iceGatheringState}`);
+			pc.oniceconnectionstatechange = () => {
+				console.log(`[${side}] ${label} ICE state → ${pc.iceConnectionState}`);
+				if (pc.iceConnectionState === 'failed') {
+					console.error(`[${side}] ${label} ICE negotiation FAILED. Candidates exchanged but no path found.`);
+				}
+			};
+			pc.onicegatheringstatechange = () => {
+				console.log(`[${side}] ${label} ICE gathering → ${pc.iceGatheringState}`);
+			};
+			pc.onconnectionstatechange = () => {
+				console.log(`[${side}] ${label} connection state → ${pc.connectionState}`);
+			};
+		};
+		check();
+	}
+
 	_connectToHost() {
+		console.log(`[WebRTC-Client] Connecting to host ${this.remoteId}, opening 3 channels...`);
 		// Client connects to Host. Open three channels.
 		// serialization:'binary' is required for all channels that carry typed arrays.
 		// Without it PeerJS defaults to binary-pack (msgpack) which wraps the
@@ -93,12 +136,34 @@ export class WebRTCHandler {
 		this._setupClientListeners(this.connCmd, 'cmd');
 		this._setupClientListeners(this.connFft, 'fft');
 		this._setupClientListeners(this.connAudio, 'audio');
+
+		// Monitor ICE state on each connection
+		this._monitorIceState(this.connCmd, 'cmd', 'WebRTC-Client');
+		this._monitorIceState(this.connFft, 'fft', 'WebRTC-Client');
+		this._monitorIceState(this.connAudio, 'audio', 'WebRTC-Client');
+
+		// Timeout: if not all channels open within 15s, dump diagnostic info
+		setTimeout(() => {
+			if (!(this.connCmd?.open && this.connFft?.open && this.connAudio?.open)) {
+				console.warn(`[WebRTC-Client] Connection timeout after 15s. Not all channels opened.`);
+				this._logClientChannelState();
+				[['cmd', this.connCmd], ['fft', this.connFft], ['audio', this.connAudio]].forEach(([label, c]) => {
+					if (c?.peerConnection) {
+						const pc = c.peerConnection;
+						console.warn(`[WebRTC-Client] ${label} — ICE: ${pc.iceConnectionState}, signaling: ${pc.signalingState}, connection: ${pc.connectionState}`);
+					} else {
+						console.warn(`[WebRTC-Client] ${label} — no peerConnection available`);
+					}
+				});
+			}
+		}, 15000);
 	}
 
 	// ── Host: incoming connection handling (multi-client) ─────────────────
 
 	_handleIncomingConnection(conn) {
 		const clientId = conn.peer;
+		console.log(`[WebRTC-Host] Incoming connection from ${clientId}, label=${conn.label}, serialization=${conn.serialization}`);
 		if (!this.clients.has(clientId)) {
 			this.clients.set(clientId, { cmd: null, fft: null, audio: null, fftOverflow: false, audioOverflow: false });
 		}
@@ -113,13 +178,22 @@ export class WebRTCHandler {
 		}
 
 		this._setupHostListeners(conn, conn.label, clientId);
+		this._monitorIceState(conn, conn.label, `WebRTC-Host(${clientId.substring(0, 8)})`);
+	}
+
+	_logHostChannelState(clientId) {
+		const client = this.clients.get(clientId);
+		if (!client) return;
+		console.log(`[WebRTC-Host] Channel state for ${clientId}: cmd=${client.cmd?.open ?? 'null'} fft=${client.fft?.open ?? 'null'} audio=${client.audio?.open ?? 'null'}`);
 	}
 
 	_setupHostListeners(conn, type, clientId) {
 		conn.on('open', () => {
-			console.log(`[WebRTC] ${type} channel opened for client ${clientId}.`);
+			console.log(`[WebRTC-Host] ${type} channel opened for client ${clientId}.`);
+			this._logHostChannelState(clientId);
 			const client = this.clients.get(clientId);
 			if (client && client.cmd && client.cmd.open && client.fft && client.fft.open && client.audio && client.audio.open) {
+				console.log(`[WebRTC-Host] All 3 channels open for ${clientId}, emitting client-connected.`);
 				this._setStatus({ status: 'client-connected', clientId });
 			}
 		});
@@ -131,8 +205,13 @@ export class WebRTCHandler {
 			// Host doesn't receive fft/audio from clients
 		});
 
+		conn.on('error', (err) => {
+			console.error(`[WebRTC-Host] ${type} channel error for client ${clientId}:`, err);
+			this._logHostChannelState(clientId);
+		});
+
 		conn.on('close', () => {
-			console.log(`[WebRTC] ${type} channel closed for client ${clientId}.`);
+			console.log(`[WebRTC-Host] ${type} channel closed for client ${clientId}.`);
 			const client = this.clients.get(clientId);
 			if (!client) return;
 			// Only fire disconnected once when any channel drops
@@ -145,10 +224,16 @@ export class WebRTCHandler {
 
 	// ── Client: connection listeners (single host) ───────────────────────
 
+	_logClientChannelState() {
+		console.log(`[WebRTC-Client] Channel state: cmd=${this.connCmd?.open ?? 'null'} fft=${this.connFft?.open ?? 'null'} audio=${this.connAudio?.open ?? 'null'}`);
+	}
+
 	_setupClientListeners(conn, type) {
 		conn.on('open', () => {
-			console.log(`[WebRTC] ${type} channel opened.`);
+			console.log(`[WebRTC-Client] ${type} channel opened.`);
+			this._logClientChannelState();
 			if (this.connCmd && this.connCmd.open && this.connFft && this.connFft.open && this.connAudio && this.connAudio.open) {
+				console.log(`[WebRTC-Client] All 3 channels open, emitting connected.`);
 				this._setStatus({ status: 'connected' });
 			}
 		});
@@ -163,8 +248,13 @@ export class WebRTCHandler {
 			}
 		});
 
+		conn.on('error', (err) => {
+			console.error(`[WebRTC-Client] ${type} channel error:`, err);
+			this._logClientChannelState();
+		});
+
 		conn.on('close', () => {
-			console.log(`[WebRTC] ${type} channel closed.`);
+			console.log(`[WebRTC-Client] ${type} channel closed.`);
 			this._setStatus({ status: 'disconnected' });
 		});
 	}

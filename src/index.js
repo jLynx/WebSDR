@@ -20,6 +20,40 @@ export default {
 			);
 		}
 
+		// Generate short-lived TURN credentials via Cloudflare Calls
+		// Requires TURN_KEY_ID and TURN_KEY_API_TOKEN secrets set on the Worker
+		if (url.pathname === '/api/turn') {
+			if (!env.TURN_KEY_ID || !env.TURN_KEY_API_TOKEN) {
+				return new Response(
+					JSON.stringify({ iceServers: [] }),
+					{ headers: { 'Content-Type': 'application/json' } }
+				);
+			}
+			try {
+				const turnResp = await fetch(
+					`https://rtc.live.cloudflare.com/v1/turn/keys/${env.TURN_KEY_ID}/credentials/generate-ice-servers`,
+					{
+						method: 'POST',
+						headers: {
+							'Authorization': `Bearer ${env.TURN_KEY_API_TOKEN}`,
+							'Content-Type': 'application/json',
+						},
+						body: JSON.stringify({ ttl: 14400 }), // 4 hours
+					}
+				);
+				const data = await turnResp.json();
+				return new Response(
+					JSON.stringify(data),
+					{ headers: { 'Content-Type': 'application/json' } }
+				);
+			} catch (err) {
+				return new Response(
+					JSON.stringify({ iceServers: [], error: err.message }),
+					{ status: 500, headers: { 'Content-Type': 'application/json' } }
+				);
+			}
+		}
+
 		// Proxy HuggingFace model downloads to avoid CORS issues
 		if (url.pathname.startsWith('/hf-proxy/')) {
 			const hfPath = url.pathname.slice('/hf-proxy/'.length) + url.search;
