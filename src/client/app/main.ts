@@ -55,7 +55,7 @@ createApp({
 
 			if (this.running) {
 				await this.togglePlay();
-				await this.togglePlay();
+				await this.togglePlay(true);
 			}
 
 			// Broadcast updated radio settings to all remote clients

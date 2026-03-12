@@ -76,7 +76,7 @@ export const connectionMethods = {
 		this.connected = false;
 		this.showMsg("Disconnected");
 	},
-	async togglePlay(this: AppInstance) {
+	async togglePlay(this: AppInstance, isRestart = false) {
 		if (this.running) {
 			await this.backend.stopRx();
 			this.running = false;
@@ -88,10 +88,10 @@ export const connectionMethods = {
 				this.gainNode = null;
 			}
 		} else {
-			this.startStream();
+			this.startStream(isRestart);
 		}
 	},
-	async startStream(this: AppInstance) {
+	async startStream(this: AppInstance, isRestart = false) {
 		if (this.running) return;
 
 		this.initCanvas();
@@ -177,8 +177,11 @@ export const connectionMethods = {
 			}
 		}
 
-		// Enable first VFO by default when starting stream
-		this.vfos[0].enabled = true;
+		// Enable first VFO by default only on initial start (not restart).
+		// During a restart (e.g. center freq change), preserve existing mute states.
+		if (!isRestart) {
+			this.vfos[0].enabled = true;
+		}
 		this.toggleVfoCheckbox(0);
 
 		// Send all VFO params to worker (or host in client mode)
