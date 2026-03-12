@@ -2,17 +2,69 @@ import { defineConfig, type Plugin } from 'vite';
 import path from 'path';
 import fs from 'fs';
 
-// Plugin to copy WASM files to dist on build
-function copyWasmPlugin(): Plugin {
+// Plugin to copy WASM files to dist on build and fix .ts → .js output filenames
+function postBuildPlugin(): Plugin {
 	return {
-		name: 'copy-wasm',
+		name: 'post-build',
 		closeBundle() {
-			const src = path.resolve(__dirname, 'hackrf-web/pkg');
-			const dest = path.resolve(__dirname, 'dist/hackrf-web/pkg');
-			if (fs.existsSync(src)) {
-				fs.mkdirSync(dest, { recursive: true });
-				for (const file of fs.readdirSync(src)) {
-					fs.copyFileSync(path.join(src, file), path.join(dest, file));
+			const distDir = path.resolve(__dirname, 'dist');
+
+			// Copy WASM files
+			const wasmSrc = path.resolve(__dirname, 'hackrf-web/pkg');
+			const wasmDest = path.resolve(distDir, 'hackrf-web/pkg');
+			if (fs.existsSync(wasmSrc)) {
+				fs.mkdirSync(wasmDest, { recursive: true });
+				for (const file of fs.readdirSync(wasmSrc)) {
+					fs.copyFileSync(path.join(wasmSrc, file), path.join(wasmDest, file));
+				}
+			}
+
+			// Rename .ts output files to .js and update references
+			// (Vite preserves .ts extensions for worker chunks which causes MIME type issues)
+			const assetsDir = path.join(distDir, 'assets');
+			if (!fs.existsSync(assetsDir)) return;
+
+			const renames: [string, string][] = [];
+			for (const file of fs.readdirSync(assetsDir)) {
+				if (file.endsWith('.ts')) {
+					const newName = file.replace(/\.ts$/, '.js');
+					renames.push([file, newName]);
+					fs.renameSync(path.join(assetsDir, file), path.join(assetsDir, newName));
+				}
+			}
+
+			if (renames.length === 0) return;
+
+			// Update references in all JS files
+			for (const file of fs.readdirSync(assetsDir)) {
+				if (!file.endsWith('.js')) continue;
+				const filePath = path.join(assetsDir, file);
+				let content = fs.readFileSync(filePath, 'utf-8');
+				let changed = false;
+				for (const [oldName, newName] of renames) {
+					if (content.includes(oldName)) {
+						content = content.replaceAll(oldName, newName);
+						changed = true;
+					}
+				}
+				if (changed) {
+					fs.writeFileSync(filePath, content);
+				}
+			}
+
+			// Also update references in index.html
+			const htmlPath = path.join(distDir, 'index.html');
+			if (fs.existsSync(htmlPath)) {
+				let html = fs.readFileSync(htmlPath, 'utf-8');
+				let changed = false;
+				for (const [oldName, newName] of renames) {
+					if (html.includes(oldName)) {
+						html = html.replaceAll(oldName, newName);
+						changed = true;
+					}
+				}
+				if (changed) {
+					fs.writeFileSync(htmlPath, html);
 				}
 			}
 		},
@@ -32,28 +84,13 @@ export default defineConfig({
 	},
 	worker: {
 		format: 'es',
-		plugins: () => [
-			{
-				name: 'worker-ts-to-js',
-				generateBundle(_options: any, bundle: any) {
-					for (const key of Object.keys(bundle)) {
-						if (key.endsWith('.ts')) {
-							const newKey = key.replace(/\.ts$/, '.js');
-							bundle[newKey] = bundle[key];
-							bundle[newKey].fileName = bundle[key].fileName.replace(/\.ts$/, '.js');
-							delete bundle[key];
-						}
-					}
-				},
-			},
-		],
 		rollupOptions: {
 			external: [
 				/\/hackrf-web\/pkg\//,
 			],
 		},
 	},
-	plugins: [copyWasmPlugin()],
+	plugins: [postBuildPlugin()],
 	publicDir: path.resolve(__dirname, 'public'),
 	define: {
 		__VUE_OPTIONS_API__: true,
@@ -62,7 +99,6 @@ export default defineConfig({
 	},
 	resolve: {
 		alias: {
-			// Use the compiler-included build so Vue can compile templates from HTML
 			'vue': 'vue/dist/vue.esm-bundler.js',
 			'/hackrf-web/pkg': path.resolve(__dirname, 'hackrf-web/pkg'),
 		},
