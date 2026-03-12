@@ -157,4 +157,4 @@ cargo make test
 
 ## 📜 License
 
-Licensed under the **GPL-2.0** — see [COPYING](COPYING) for details.
+Licensed under the **AGPL-3.0** — see [LICENSE](LICENSE) for details.
