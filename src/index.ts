@@ -33,11 +33,17 @@ export default {
 	async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
 		const url = new URL(request.url);
 
+		// Cross-origin isolation headers (required for SharedArrayBuffer)
+		const coopHeaders = {
+			'Cross-Origin-Opener-Policy': 'same-origin',
+			'Cross-Origin-Embedder-Policy': 'require-corp',
+		};
+
 		// Return the caller's country code (from Cloudflare headers)
 		if (url.pathname === '/api/geo') {
 			return new Response(
 				JSON.stringify({ country: request.headers.get('CF-IPCountry') || 'XX' }),
-				{ headers: { 'Content-Type': 'application/json' } }
+				{ headers: { 'Content-Type': 'application/json', ...coopHeaders } }
 			);
 		}
 
@@ -76,7 +82,7 @@ export default {
 
 			return new Response(
 				JSON.stringify({ iceServers }),
-				{ headers: { 'Content-Type': 'application/json' } }
+				{ headers: { 'Content-Type': 'application/json', ...coopHeaders } }
 			);
 		}
 
@@ -101,8 +107,11 @@ export default {
 			return response;
 		}
 
-		// The ASSETS binding automatically serves static files from ./public/
-		// This handler is called for requests that don't match a static asset
-		return env.ASSETS.fetch(request);
+		// Serve static assets with cross-origin isolation headers
+		const response = await env.ASSETS.fetch(request);
+		const newResponse = new Response(response.body, response);
+		newResponse.headers.set('Cross-Origin-Opener-Policy', 'same-origin');
+		newResponse.headers.set('Cross-Origin-Embedder-Policy', 'require-corp');
+		return newResponse;
 	},
 };
