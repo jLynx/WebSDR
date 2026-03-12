@@ -127,6 +127,10 @@ export const connectionMethods = {
 		this._statsTimer = setInterval(async () => {
 			if (this.backend && this.running) {
 				this.dspStats = await this.backend.getDspStats();
+				// Remote clients receive squelch state via WebRTC 'squelchState'
+				// commands (see remote.ts). Skip local polling so the host-provided
+				// data isn't overwritten with stale all-false values from the mock backend.
+				if (this.remoteMode === 'client') return;
 				if (this.dspStats && this.dspStats.squelchOpen) {
 					const now = Date.now();
 					const squelchStates = this.dspStats.squelchOpen.slice();
