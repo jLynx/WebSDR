@@ -171,36 +171,10 @@ export class FFT {
         wasm.__wbg_fft_free(ptr, 0);
     }
     /**
-     * Perform a complex FFT on HackRF One IQ samples and apply all
-     * preprocessing needed for spectrogram waterfall display.
+     * Process raw i8 IQ samples and write power spectrum to `result`.
      *
-     * This method performs the following operations in a single pass:
-     * 1. Normalize IQ samples (i8 → f32)
-     * 2. Apply window function
-     * 3. Complex FFT
-     * 4. Rearrange frequency axis to DC-centered layout
-     * 5. Exponential moving average smoothing (when configured)
-     * 6. Convert to dB scale
-     *
-     * The output array can be used directly as a single row (spectrum at time t)
-     * in a waterfall spectrogram display.
-     *
-     * # Input format
-     * * `input_` - Complex sequence as i8 array `[re0, im0, re1, im1, ...]`
-     *               Length must be `self.n * 2`
-     *
-     * # Output format
-     * * `result` - Buffer to store results. Length must be `self.n`
-     *   - `result[0 .. half_n]` - Negative frequency components (DC-centered, dB scale)
-     *   - `result[half_n .. n]` - Positive frequency components (DC-centered, dB scale)
-     *
-     * # Contract (caller's responsibility)
-     * * `input_.len() == self.n * 2` must hold
-     * * `result.len() == self.n` must hold
-     *
-     * # Safety
-     * This function uses unsafe memory reinterpretation. Violating the contract
-     * may cause undefined behavior.
+     * Input: i8 IQ pairs [I0, Q0, I1, Q1, ...] — length must be at least 2 * n
+     * Output: f32 power spectrum in dB, DC-centered, length `n`
      * @param {Int8Array} input_
      * @param {Float32Array} result
      */
@@ -212,9 +186,8 @@ export class FFT {
         wasm.fft_fft(this.__wbg_ptr, ptr0, len0, ptr1, len1, result);
     }
     /**
-     * Zero-copy version of `fft`.
-     * Reads from a raw pointer and returns a raw pointer to internally stored f32 values.
-     * Capacity of input must be length * 2.
+     * Zero-copy FFT: takes a raw pointer to i8 IQ data, returns a raw pointer to f32 output.
+     * The returned pointer is valid until the next call to `fft` or `fft_ptr`.
      * @param {number} iq_ptr
      * @param {number} num_iq_bytes
      * @returns {number}
@@ -229,11 +202,6 @@ export class FFT {
      * # Arguments
      * * `n` - FFT size. Must be a power of two and greater than 0
      * * `window_` - Window function array. Length must equal `n`
-     *
-     * # Panics
-     * * If `n` is 0
-     * * If `n` is not a power of two
-     * * If `window_.len() != n`
      * @param {number} n
      * @param {Float32Array} window_
      */
@@ -246,6 +214,9 @@ export class FFT {
         return this;
     }
     /**
+     * Set smoothing speed (SDR++ semantics).
+     * 1.0 = no smoothing (100% new value).
+     * 0.0 = full smoothing (output frozen — 0% new value).
      * @param {number} val
      */
     set_smoothing_speed(val) {
