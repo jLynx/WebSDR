@@ -2021,3 +2021,450 @@ canvas {
 	font-size: 13px;
 	opacity: 0.6;
 }
+
+/* ========================================
+   MOBILE RESPONSIVE STYLES
+   ======================================== */
+
+/* Hamburger button & backdrop — hidden on desktop */
+.sidebar-toggle {
+	display: none;
+}
+.sidebar-backdrop {
+	display: none;
+}
+
+/* Mobile VFO bottom strip — hidden on desktop */
+.vfo-bottom-strip {
+	display: none;
+}
+
+@media (max-width: 768px) {
+
+	/* ── Top Bar ── */
+	.top-bar {
+		height: 48px;
+		padding: 0 8px;
+		gap: 4px;
+	}
+
+	.sidebar-toggle {
+		display: flex;
+		flex-shrink: 0;
+	}
+
+	.brand {
+		font-size: 14px;
+		margin-right: 8px;
+	}
+
+	.github-link {
+		display: none;
+	}
+
+	.vfo-displays {
+		gap: 4px;
+		padding-top: 8px;
+		padding-bottom: 8px;
+	}
+
+	.vfo-display {
+		padding: 2px 6px;
+	}
+
+	.vfo-freq-input {
+		font-size: 14px;
+		width: 100px;
+		letter-spacing: 1px;
+	}
+
+	.vfo-unit {
+		font-size: 11px;
+		margin-left: 4px;
+	}
+
+	.vfo-label {
+		font-size: 9px;
+		padding: 1px 3px;
+		margin-right: 4px;
+	}
+
+	.vfo-bookmark-label {
+		font-size: 7px;
+	}
+
+	/* Hide VFO displays from top bar on mobile — they move to bottom strip */
+	.vfo-displays {
+		display: none;
+	}
+
+	/* ── Mobile VFO Bottom Strip ── */
+	.vfo-bottom-strip {
+		display: flex;
+		align-items: center;
+		gap: 6px;
+		padding: 6px 8px;
+		background: var(--bg-header);
+		border-top: 1px solid var(--border);
+		overflow-x: auto;
+		flex-shrink: 0;
+		-webkit-overflow-scrolling: touch;
+	}
+
+	.vfo-bottom-tab {
+		display: flex;
+		align-items: center;
+		gap: 4px;
+		background: #000;
+		padding: 4px 10px;
+		border-radius: 4px;
+		border: 2px solid #444;
+		cursor: pointer;
+		transition: border-color 0.15s;
+		flex-shrink: 0;
+		min-height: 36px;
+	}
+
+	.vfo-bottom-tab.vfo-active {
+		border-color: #aaa;
+	}
+
+	.vfo-bottom-tab.vfo-squelch-open {
+		animation: vfo-squelch-pulse 0.8s ease-in-out infinite;
+	}
+
+	.vfo-bottom-tab.vfo-audio-off {
+		opacity: 0.4;
+	}
+
+	.vfo-bottom-freq {
+		font-family: 'Roboto Mono', monospace;
+		font-size: 14px;
+		font-weight: bold;
+		color: #e0e0e0;
+		letter-spacing: 1px;
+		white-space: nowrap;
+	}
+
+	.top-controls {
+		gap: 2px;
+	}
+
+	.top-controls .icon-btn {
+		padding: 6px;
+	}
+
+	.top-controls .icon-btn svg {
+		width: 20px;
+		height: 20px;
+	}
+
+	/* ── Sidebar (off-canvas drawer) ── */
+	.sidebar-backdrop {
+		display: block;
+		position: fixed;
+		inset: 0;
+		background: rgba(0, 0, 0, 0.5);
+		z-index: 199;
+	}
+
+	.sidebar {
+		position: fixed;
+		top: 0;
+		left: 0;
+		bottom: 0;
+		width: 85vw;
+		max-width: 320px;
+		z-index: 200;
+		transform: translateX(-100%);
+		transition: transform 0.25s ease;
+		overflow-y: auto;
+	}
+
+	.sidebar.sidebar-open {
+		transform: translateX(0);
+	}
+
+	/* ── Main Layout ── */
+	.main-layout {
+		position: relative;
+	}
+
+	/* ── Workspace full width ── */
+	.workspace {
+		width: 100%;
+	}
+
+	/* ── Panel touch targets ── */
+	.panel-header {
+		padding: 10px 12px;
+		font-size: 13px;
+	}
+
+	.panel-body {
+		padding: 12px;
+	}
+
+	.form-row label {
+		font-size: 13px;
+	}
+
+	.form-row {
+		min-height: 40px;
+	}
+
+	select {
+		font-size: 13px;
+		padding: 8px;
+		min-height: 40px;
+	}
+
+	.input-group {
+		min-height: 40px;
+	}
+
+	.input-group input {
+		font-size: 13px;
+		padding: 8px 0;
+	}
+
+	.slider-group input[type=range] {
+		min-height: 40px;
+	}
+
+	.btn {
+		padding: 10px 12px;
+		font-size: 13px;
+		min-height: 40px;
+	}
+
+	.spin-group {
+		height: 36px;
+	}
+
+	.spin-group button {
+		width: 36px;
+		min-height: 36px;
+	}
+
+	.mode-grid {
+		grid-template-columns: repeat(4, 1fr);
+		gap: 6px;
+	}
+
+	.mode-btn {
+		font-size: 11px;
+		min-height: 32px;
+	}
+
+	.custom-checkbox {
+		font-size: 13px;
+		min-height: 40px;
+		display: flex;
+		align-items: center;
+	}
+
+	.checkmark {
+		width: 22px;
+		height: 22px;
+	}
+
+	.custom-checkbox .checkmark:after {
+		left: 7px;
+		top: 2px;
+		width: 5px;
+		height: 11px;
+	}
+
+	/* ── Bookmark touch targets ── */
+	.bookmark-item {
+		padding: 8px 10px;
+		min-height: 40px;
+	}
+
+	.bookmark-btn {
+		width: 34px;
+		height: 34px;
+		font-size: 15px;
+	}
+
+	.bookmark-save-btn {
+		padding: 8px;
+		min-height: 40px;
+	}
+
+	.bookmark-cat-header {
+		padding: 8px 10px;
+		min-height: 40px;
+	}
+
+	/* ── Bottom Panels (transcript, POCSAG, activity) ── */
+	.transcript-panel,
+	.pocsag-panel,
+	.activity-panel {
+		height: 40vh;
+		max-height: 50vh;
+	}
+
+	.transcript-header,
+	.pocsag-header,
+	.activity-header {
+		flex-wrap: wrap;
+		gap: 6px;
+		padding: 8px 10px;
+	}
+
+	.transcript-controls,
+	.pocsag-controls,
+	.activity-controls {
+		flex-wrap: wrap;
+		gap: 4px;
+	}
+
+	.transcript-select {
+		font-size: 10px;
+		max-width: 120px;
+	}
+
+	.transcript-entry {
+		flex-wrap: wrap;
+		gap: 4px;
+	}
+
+	.pocsag-entry {
+		flex-wrap: wrap;
+		gap: 4px;
+	}
+
+	.activity-row {
+		padding: 6px 10px;
+		min-height: 40px;
+		flex-wrap: wrap;
+		gap: 4px;
+	}
+
+	.act-freq {
+		font-size: 11px;
+		min-width: unset;
+	}
+
+	.act-label {
+		max-width: 120px;
+	}
+
+	/* ── Modals / Dialogs ── */
+	.bookmark-dialog {
+		width: 95vw;
+		max-width: 95vw;
+		max-height: 90vh;
+		overflow-y: auto;
+	}
+
+	.bookmark-edit-dialog {
+		width: 95vw;
+	}
+
+	.bm-import-dialog {
+		width: 95vw;
+	}
+
+	.remote-clients-dialog {
+		min-width: unset;
+		width: 95vw;
+	}
+
+	.bookmark-dialog-body {
+		padding: 12px;
+	}
+
+	.bm-edit-row {
+		flex-wrap: wrap;
+		gap: 6px;
+	}
+
+	.bm-edit-label {
+		flex: 0 0 100%;
+		font-size: 12px;
+	}
+
+	.bm-edit-input {
+		font-size: 13px;
+		padding: 8px;
+		min-height: 40px;
+	}
+
+	.bm-edit-select {
+		font-size: 13px;
+		padding: 8px 6px;
+		min-height: 40px;
+	}
+
+	/* ── Frequency axis ── */
+	.freq-axis .tick {
+		font-size: 9px;
+	}
+
+	/* ── DSP Stats overlay ── */
+	.dsp-stats-overlay {
+		font-size: 9px;
+		padding: 6px 8px;
+	}
+
+	/* ── Active audio overlay ── */
+	.active-audio-overlay {
+		bottom: 8px;
+		right: 8px;
+	}
+
+	.active-audio-chips {
+		max-width: 200px;
+	}
+
+	.active-audio-chip {
+		padding: 3px 6px;
+	}
+
+	/* ── Snackbar ── */
+	.snackbar {
+		left: 10%;
+		right: 10%;
+		transform: none;
+		text-align: center;
+	}
+
+	/* ── Lock & VFO buttons ── */
+	.lock-btn {
+		width: 32px;
+		height: 32px;
+	}
+
+	.vfo-remove-btn {
+		width: 28px;
+		height: 28px;
+	}
+}
+
+/* Very small phones (320px-380px) */
+@media (max-width: 380px) {
+	.brand {
+		display: none;
+	}
+
+	.vfo-freq-input {
+		font-size: 12px;
+		width: 80px;
+	}
+
+	.top-controls .icon-btn svg {
+		width: 18px;
+		height: 18px;
+	}
+
+	.vfo-unit {
+		display: none;
+	}
+
+	.sidebar {
+		width: 90vw;
+	}
+}

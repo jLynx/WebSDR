@@ -109,6 +109,7 @@ export function createAppData() {
 			vfos: [] as any[],
 			activeVfoIndex: 0,
 		},
+		sidebarOpen: false,
 		collapsedPanels: {} as Record<string, boolean>,
 	};
 }

@@ -114,6 +114,12 @@ export const uiHelperMethods = {
 		this.snackbar.show = true;
 		setTimeout(() => { this.snackbar.show = false; }, 3000);
 	},
+	toggleSidebar(this: AppInstance) {
+		this.sidebarOpen = !this.sidebarOpen;
+	},
+	closeSidebar(this: AppInstance) {
+		this.sidebarOpen = false;
+	},
 	unlockAndConnect(this: AppInstance) {
 		this.audioUnlockPendingId = null;
 		this._initAudioCtx();

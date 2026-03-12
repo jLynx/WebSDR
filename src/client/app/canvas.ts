@@ -304,6 +304,106 @@ export function mountCanvas(this: AppInstance) {
 	// Prevent context menu on right click for panning
 	const handleContextMenu = (e: Event) => e.preventDefault();
 
+	// Touch handling for mobile (pinch-to-zoom, single-finger pan, tap-to-tune)
+	let touchStartDist = 0;
+	let touchStartScale = 1;
+	let touchStartOffset = 0;
+	let touchStartCenter = 0;
+	let touchIsPanning = false;
+	let touchLastX = 0;
+	let touchStartX = 0;
+	let touchStartY = 0;
+	let touchStartTime = 0;
+	const TAP_THRESHOLD = 10; // pixels
+	const TAP_TIME = 300; // ms
+
+	const getTouchDist = (t1: Touch, t2: Touch) =>
+		Math.hypot(t2.clientX - t1.clientX, t2.clientY - t1.clientY);
+
+	const handleTouchStart = (e: TouchEvent) => {
+		if (e.touches.length === 2) {
+			// Pinch start
+			e.preventDefault();
+			touchIsPanning = false;
+			touchStartDist = getTouchDist(e.touches[0], e.touches[1]);
+			touchStartScale = this.view.zoomScale;
+			touchStartOffset = this.view.zoomOffset;
+			const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
+			touchStartCenter = ((e.touches[0].clientX + e.touches[1].clientX) / 2 - rect.left) / rect.width;
+		} else if (e.touches.length === 1) {
+			// Single finger — could be pan or tap
+			touchIsPanning = false;
+			touchLastX = e.touches[0].clientX;
+			touchStartX = e.touches[0].clientX;
+			touchStartY = e.touches[0].clientY;
+			touchStartTime = Date.now();
+		}
+	};
+
+	const handleTouchMove = (e: TouchEvent) => {
+		if (e.touches.length === 2) {
+			// Pinch-to-zoom
+			e.preventDefault();
+			const dist = getTouchDist(e.touches[0], e.touches[1]);
+			const scaleFactor = dist / touchStartDist;
+			const newScale = Math.max(1.0, Math.min(100.0, touchStartScale * scaleFactor));
+
+			// Keep the pinch center point fixed
+			const absTarget = touchStartOffset + (touchStartCenter / touchStartScale);
+			let newOffset = absTarget - (touchStartCenter / newScale);
+			const maxOffset = 1.0 - (1.0 / newScale);
+			newOffset = Math.max(0, Math.min(maxOffset, newOffset));
+
+			this.view.zoomScale = newScale;
+			this.view.zoomOffset = newOffset;
+			this.applyZoomToEngine();
+		} else if (e.touches.length === 1) {
+			// Single finger pan (only when zoomed in)
+			const dx = e.touches[0].clientX - touchStartX;
+			const dy = e.touches[0].clientY - touchStartY;
+
+			// If we haven't started panning yet, check if we've moved enough
+			if (!touchIsPanning) {
+				if (Math.abs(dx) > TAP_THRESHOLD || Math.abs(dy) > TAP_THRESHOLD) {
+					touchIsPanning = true;
+				} else {
+					return;
+				}
+			}
+
+			if (this.view.zoomScale > 1.0) {
+				e.preventDefault();
+				const pixDx = e.touches[0].clientX - touchLastX;
+				touchLastX = e.touches[0].clientX;
+				const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
+				const pDelta = pixDx / rect.width;
+				let newOffset = this.view.zoomOffset - (pDelta / this.view.zoomScale);
+				const maxOffset = 1.0 - (1.0 / this.view.zoomScale);
+				newOffset = Math.max(0, Math.min(maxOffset, newOffset));
+				this.view.zoomOffset = newOffset;
+				this.applyZoomToEngine();
+			}
+		}
+	};
+
+	const handleTouchEnd = (e: TouchEvent) => {
+		if (e.touches.length === 0 && !touchIsPanning && !this.view.locked) {
+			// Tap-to-tune: only if it was a quick, short-distance touch
+			const elapsed = Date.now() - touchStartTime;
+			if (elapsed < TAP_TIME) {
+				const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
+				const p = (touchStartX - rect.left) / rect.width;
+				const f = this.minFreq + p * (this.maxFreq - this.minFreq);
+				const idx = this.activeVfoIndex;
+				if (idx >= 0 && idx < this.vfos.length) {
+					this.vfos[idx].freq = parseFloat(f.toFixed(3));
+					this.updateBackendVfoParams(idx);
+				}
+			}
+		}
+		touchIsPanning = false;
+	};
+
 	const attachCanvasEvents = (canvas: HTMLElement) => {
 		canvas.addEventListener('mousemove', handleMouseMove as EventListener);
 		canvas.addEventListener('mouseleave', leaveListener);
@@ -315,6 +415,11 @@ export function mountCanvas(this: AppInstance) {
 			this.handleWheelZoom(we, (we.currentTarget as HTMLElement).getBoundingClientRect());
 			updateHover(we);
 		}, { passive: false });
+
+		// Touch events for mobile
+		canvas.addEventListener('touchstart', handleTouchStart as EventListener, { passive: false });
+		canvas.addEventListener('touchmove', handleTouchMove as EventListener, { passive: false });
+		canvas.addEventListener('touchend', handleTouchEnd as EventListener);
 	};
 
 	attachCanvasEvents(this.$refs.fft);
