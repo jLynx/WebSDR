@@ -17,7 +17,7 @@ export function createAppData() {
 		audioUnlockPendingId: null as string | null,
 		radio: {
 			centerFreq: 100.0,
-			sampleRate: 8000000,
+			sampleRate: 20000000,
 			fftSize: 65536,
 		},
 		display: {
