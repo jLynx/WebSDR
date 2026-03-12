@@ -10,14 +10,14 @@ A blazing fast, next-generation browser-based Software Defined Radio (SDR) recei
 
 ## ✨ Stellar Features
 
-Enjoy the power of a desktop SDR platform fully within your web browser. 
+Enjoy the power of a desktop SDR platform fully within your web browser.
 
 * **🎯 Multi-VFO Mastery**
   Tune into multiple frequencies simultaneously! Create an unlimited number of Virtual Frequency Oscillators (VFOs), each with independent demodulation, volume, squelch, and DSP settings. Listen to multiple broadcasts without dropping a single packet.
 * **⚡ High-Speed Rust & WASM Architecture**
   Built for raw performance. FFT and DSP pipelines are written in **Rust** and compiled to **WebAssembly (WASM)**. Running inside Web Workers off the main thread ensures a crystal-clear, smooth UI and buttery 60 FPS performance, even with multiple active VFOs.
 * **🎙️ Live Transcribe**
-  Built-in AI-powered live transcription of demodulated audio right in your browser. 
+  Built-in AI-powered live transcription of demodulated audio right in your browser.
 * **📟 POCSAG Decoder**
   Instantly decode paging networks straight from the UI.
 * **📊 Frequency Activity**
@@ -32,6 +32,8 @@ Enjoy the power of a desktop SDR platform fully within your web browser.
   Instantly decode station name, programme type, and radiotext on WFM signals.
 * **🎛️ Full DSP Toolset**
   Control squelch, noise reduction, de-emphasis, and stereo output per VFO.
+* **🌐 Remote Access**
+  Share your SDR with others via WebRTC using PeerJS.
 
 ---
 
@@ -39,12 +41,23 @@ Enjoy the power of a desktop SDR platform fully within your web browser.
 
 1. **WebUSB** — Communicates directly with your HackRF device from Google Chrome or Edge.
 2. **WebAssembly** — Signal processing (FFT, filtering, decimation, mixer, demodulation) is handled by [RustFFT](https://github.com/awelkie/RustFFT) and highly optimized Rust code compiled to WASM.
-3. **Web Workers** — Multi-threaded DSP keeps the event loop entirely free of blocking tasks.
+3. **Web Workers** — Multi-threaded DSP via [Comlink](https://github.com/GoogleChromeLabs/comlink) keeps the event loop entirely free of blocking tasks.
 4. **WebGL** — Hardware-accelerated FFT rendering.
 5. **Vue 3** — A sleek, reactive UI powering complex per-VFO controls.
-6. **Cloudflare Workers** — Fast edge-deployed static assets.
+6. **Cloudflare Workers** — Fast edge-deployed static assets and API proxy.
 
 *(Note: WebUSB requires a secure context — HTTPS or `localhost`)*
+
+---
+
+## 🧰 Tech Stack
+
+| Layer | Technology |
+|-------|-----------|
+| Frontend | TypeScript, Vue 3 (Options API), Vite |
+| DSP | Rust, RustFFT, WebAssembly, Web Workers |
+| Deployment | Cloudflare Workers (Wrangler) |
+| Testing | Vitest, wasm-bindgen-test, cargo test |
 
 ---
 
@@ -74,7 +87,7 @@ cd hackrf-web && cargo make build && cd ..
 npm run dev
 ```
 
-Then open **[http://localhost:8787](http://localhost:8787)** in Google Chrome or any WebUSB-supported browser.
+Then open **[http://localhost:5173](http://localhost:5173)** in Google Chrome or any WebUSB-supported browser.
 
 ---
 
@@ -82,9 +95,10 @@ Then open **[http://localhost:8787](http://localhost:8787)** in Google Chrome or
 
 | Command | Description |
 |---------|-------------|
-| `npm run dev` | Build client assets and start local dev server (http://localhost:8787) |
+| `npm run dev` | Start Vite dev server (http://localhost:5173) |
 | `npm run build` | Build client assets into `dist/` |
 | `npm run deploy` | Build and deploy to Cloudflare Workers |
+| `npm run typecheck` | Run TypeScript type checking |
 | `npm run test` | Run tests with Vitest |
 
 ### Building the WASM Module
@@ -92,10 +106,8 @@ Then open **[http://localhost:8787](http://localhost:8787)** in Google Chrome or
 The Rust/WASM module must be built separately (requires Rust toolchain):
 
 ```bash
-# From the project root
 cd hackrf-web
-cargo make build          # Build for web (output: hackrf-web/pkg/)
-cargo make build-node     # Build for Node.js (output: hackrf-web/node/)
+cargo make build       # Build for web (output: hackrf-web/pkg/)
 ```
 
 > **Note:** The WASM build outputs in `hackrf-web/pkg/` are committed to the repo, so `npm run deploy` works seamlessly even without Rust installed on the CI/deployment machine.
@@ -117,40 +129,12 @@ cargo make build-node     # Build for Node.js (output: hackrf-web/node/)
 ## 🧪 Testing
 
 ```bash
-# Worker tests (Vitest + Cloudflare Workers pool)
+# TypeScript / Worker tests
 npm run test
 
-# Rust/WASM tests
+# Rust / WASM tests
 cd hackrf-web
 cargo make test
-```
-
----
-
-## 📁 Project Structure
-
-```
-.
-├── src/
-│   ├── index.js            # Cloudflare Worker entry (edge serving)
-│   └── client/             # Frontend source (Vue 3, HTML, CSS, JS)
-│       ├── index.html      # Main app entry point
-│       ├── style.css       # UI styles
-│       ├── script.js       # Core Vue 3 application logic
-│       ├── hackrf.js       # WebUSB HackRF driver
-│       ├── worker.js       # Multi-threaded DSP Web Worker
-│       └── utils.js        # WebGL / Canvas Waterfall renderers
-├── dist/                   # Production build output
-├── hackrf-web/             # Rust WASM high-performance DSP module
-│   ├── Cargo.toml
-│   ├── Makefile.toml       # WASM build & test task configurations
-│   ├── src/lib.rs          # Core DSP implementation in Rust
-│   ├── pkg/                # wasm-pack web output (committed)
-│   └── node/               # wasm-pack Node.js output (committed)
-├── test/                   # Vitest unit tests
-├── build.js                # Build script for client + WASM bundles
-├── wrangler.jsonc          # Cloudflare Worker configuration
-└── COPYING                 # License
 ```
 
 ---
