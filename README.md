@@ -8,7 +8,7 @@ A blazing fast, next-generation browser-based Software Defined Radio (SDR) recei
 
 ---
 
-## ✨ Stellar Features
+## ✨ Features
 
 Enjoy the power of a desktop SDR platform fully within your web browser.
 
