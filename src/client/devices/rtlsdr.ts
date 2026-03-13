@@ -57,23 +57,36 @@ const R820T_INIT_REGS = [
 	0x54, 0xae, 0x4a, 0xc0,
 ];
 
+// Full frequency range table from r82xx freq_ranges[] in tuner_r82xx.c
+// [startMHz, open_d (R17 bit3), rf_mux_ploy (R26), tf_c (R27)]
 const MUX_CFGS: [number, number, number, number][] = [
-	[0, 0x08, 0x02, 0xdf],
-	[50, 0x08, 0x02, 0xbe],
-	[55, 0x08, 0x02, 0x8b],
-	[60, 0x08, 0x02, 0x7b],
-	[65, 0x08, 0x02, 0x69],
-	[70, 0x08, 0x02, 0x58],
-	[75, 0x00, 0x02, 0x44],
-	[90, 0x00, 0x02, 0x34],
+	[0,   0x08, 0x02, 0xdf],
+	[50,  0x08, 0x02, 0xbe],
+	[55,  0x08, 0x02, 0x8b],
+	[60,  0x08, 0x02, 0x7b],
+	[65,  0x08, 0x02, 0x69],
+	[70,  0x08, 0x02, 0x58],
+	[75,  0x00, 0x02, 0x44],
+	[80,  0x00, 0x02, 0x44],
+	[90,  0x00, 0x02, 0x34],
+	[100, 0x00, 0x02, 0x34],
 	[110, 0x00, 0x02, 0x24],
+	[120, 0x00, 0x02, 0x24],
 	[140, 0x00, 0x02, 0x14],
 	[180, 0x00, 0x02, 0x13],
+	[220, 0x00, 0x02, 0x13],
 	[250, 0x00, 0x02, 0x11],
 	[280, 0x00, 0x02, 0x00],
 	[310, 0x00, 0x41, 0x00],
+	[450, 0x00, 0x41, 0x00],
 	[588, 0x00, 0x40, 0x00],
+	[650, 0x00, 0x40, 0x00],
 ];
+
+// r82xx gain step tables (from tuner_r82xx.c r82xx_lna_gain_steps / r82xx_mixer_gain_steps)
+// Units: 0.1 dB per step
+const R82XX_LNA_GAIN_STEPS   = [0, 9, 13, 40, 38, 13, 31, 22, 26, 31, 26, 14, 19, 5, 35, 13];
+const R82XX_MIXER_GAIN_STEPS = [0, 5, 10, 10, 19,  9, 10, 25, 17, 10,  8, 16, 13, 6,  3, -8];
 
 const BIT_REVS = [
 	0x0, 0x8, 0x4, 0xc, 0x2, 0xa, 0x6, 0xe,
@@ -198,16 +211,21 @@ class RtlCom {
 	}
 }
 
-// ── R820T Tuner ───────────────────────────────────────────────────
+// R82xx tuner family: R820T, R820T2, R828D
 class R820T {
 	private com: RtlCom;
 	private xtalFreq: number;
+	private i2cAddr: number;
+	private isR828D: boolean;
 	private shadowRegs!: Uint8Array;
 	private hasPllLock = false;
+	private lastInput = -1; // R828D antenna input tracking
 
-	constructor(com: RtlCom, xtalFreq: number) {
+	constructor(com: RtlCom, xtalFreq: number, i2cAddr = R820T_I2C_ADDR, isR828D = false) {
 		this.com = com;
 		this.xtalFreq = xtalFreq;
+		this.i2cAddr = i2cAddr;
+		this.isR828D = isR828D;
 	}
 
 	static async check(com: RtlCom): Promise<boolean> {
@@ -215,43 +233,64 @@ class R820T {
 		return val === R820T_CHECK_VAL;
 	}
 
+	private i2cWrite(reg: number, val: number) {
+		return this.com.writeI2CReg(this.i2cAddr, reg, val);
+	}
+
+	private i2cReadBuf(addr: number, len: number) {
+		return this.com.readI2CRegBuffer(this.i2cAddr, addr, len);
+	}
+
 	async init(): Promise<void> {
 		this.shadowRegs = new Uint8Array(R820T_INIT_REGS);
 		for (let i = 0; i < R820T_INIT_REGS.length; i++) {
-			await this.com.writeI2CReg(R820T_I2C_ADDR, i + 5, R820T_INIT_REGS[i]);
+			await this.i2cWrite(i + 5, R820T_INIT_REGS[i]);
 		}
 		await this.initElectronics();
 	}
 
 	async setFrequency(freq: number): Promise<number> {
 		await this.setMux(freq);
-		return this.setPll(freq);
+		const result = await this.setPll(freq);
+		// R828D: switch between Cable1 and Air-In inputs at 345 MHz
+		// (same threshold as r82xx driver: 345 MHz)
+		if (this.isR828D) {
+			const airIn = freq > 345000000 ? 0x00 : 0x60;
+			if (airIn !== this.lastInput) {
+				this.lastInput = airIn;
+				await this.writeRegMask(0x05, airIn, 0x60);
+			}
+		}
+		return result;
 	}
 
 	async setAutoGain(): Promise<void> {
 		await this.writeEach([
-			[0x05, 0x00, 0x10],
-			[0x07, 0x10, 0x10],
-			[0x0c, 0x0b, 0x9f],
+			[0x05, 0x00, 0x10], // LNA auto on
+			[0x07, 0x10, 0x10], // Mixer auto on
+			[0x0c, 0x0b, 0x9f], // VGA gain 26.5 dB
 		]);
 	}
 
 	async setManualGain(gain: number): Promise<void> {
-		let step: number;
-		if (gain <= 15) {
-			step = Math.round(1.36 + gain * (1.1118 + gain * (-0.0786 + gain * 0.0027)));
-		} else {
-			step = Math.round(1.2068 + gain * (0.6875 + gain * (-0.01011 + gain * 0.0001587)));
+		// Use r82xx cumulative LNA+mixer gain stepping algorithm
+		// gain 0-50 maps to 0-50 dB (in 0.1dB tenths: 0-500)
+		const targetTenths = gain * 10;
+		let totalGain = 0;
+		let lnaIndex = 0;
+		let mixIndex = 0;
+		for (let i = 0; i < 15; i++) {
+			if (totalGain >= targetTenths) break;
+			totalGain += R82XX_LNA_GAIN_STEPS[++lnaIndex];
+			if (totalGain >= targetTenths) break;
+			totalGain += R82XX_MIXER_GAIN_STEPS[++mixIndex];
 		}
-		step = Math.max(0, Math.min(30, step));
-		const lnaValue = Math.floor(step / 2);
-		const mixerValue = Math.floor((step - 1) / 2);
 		await this.writeEach([
-			[0x05, 0x10, 0x10],
-			[0x07, 0x00, 0x10],
-			[0x0c, 0x08, 0x9f],
-			[0x05, lnaValue, 0x0f],
-			[0x07, mixerValue, 0x0f],
+			[0x05, 0x10, 0x10],         // LNA auto off
+			[0x07, 0x00, 0x10],         // Mixer auto off
+			[0x0c, 0x08, 0x9f],         // VGA gain 16.3 dB
+			[0x05, lnaIndex,  0x0f],    // set LNA gain index
+			[0x07, mixIndex,  0x0f],    // set Mixer gain index
 		]);
 	}
 
@@ -386,7 +425,7 @@ class R820T {
 	}
 
 	private async readRegBuffer(addr: number, length: number): Promise<Uint8Array> {
-		const buf = await this.com.readI2CRegBuffer(R820T_I2C_ADDR, addr, length);
+		const buf = await this.i2cReadBuf(addr, length);
 		const arr = new Uint8Array(buf);
 		// R820T returns bit-reversed data
 		for (let i = 0; i < arr.length; i++) {
@@ -400,7 +439,7 @@ class R820T {
 		const rc = this.shadowRegs[addr - 5];
 		const val = (rc & ~mask) | (value & mask);
 		this.shadowRegs[addr - 5] = val;
-		await this.com.writeI2CReg(R820T_I2C_ADDR, addr, val);
+		await this.i2cWrite(addr, val);
 	}
 
 	private async writeEach(cmds: [number, number, number][]): Promise<void> {
@@ -976,6 +1015,374 @@ class E4000 {
 	}
 }
 
+// ── FC0013 Tuner ─────────────────────────────────────────────────
+// Very similar to FC0012 but different init regs, VHF tracking, and gain table.
+// Source: tuner_fc0013.c (Hans-Frieder Vogt / Steve Markgraf / GPL-2.0)
+const FC0013_I2C_ADDR = 0xc6;
+
+const FC0013_BANDS: [number, number, number, number][] = [
+	[37084000,  96, 0x82, 0x00],
+	[55625000,  64, 0x02, 0x02],
+	[74167000,  48, 0x42, 0x00],
+	[111250000, 32, 0x82, 0x02],
+	[148334000, 24, 0x22, 0x00],
+	[222500000, 16, 0x42, 0x02],
+	[296667000, 12, 0x12, 0x00],
+	[445000000,  8, 0x22, 0x02],
+	[593334000,  6, 0x0a, 0x00],
+	[950000000,  4, 0x12, 0x02],
+	[Infinity,   2, 0x0a, 0x02],
+];
+
+// [gain_tenth_dB, register_value] — from fc0013_lna_gains[]
+const FC0013_LNA_GAINS: [number, number][] = [
+	[-99, 0x02], [-73, 0x03], [-65, 0x05], [-63, 0x04], [-63, 0x00], [-60, 0x07],
+	[-58, 0x01], [-54, 0x06], [58, 0x0f], [61, 0x0e], [63, 0x0d], [65, 0x0c],
+	[67, 0x0b], [68, 0x0a], [70, 0x09], [71, 0x08],
+	[179, 0x17], [181, 0x16], [182, 0x15], [184, 0x14],
+	[186, 0x13], [188, 0x12], [191, 0x11], [197, 0x10],
+];
+
+class FC0013 {
+	private com: RtlCom;
+	private xtalFreq: number;
+
+	constructor(com: RtlCom, xtalFreq: number) {
+		this.com = com;
+		this.xtalFreq = xtalFreq;
+	}
+
+	async init(): Promise<void> {
+		// Init register table from tuner_fc0013.c fc0013_init()
+		const initRegs: [number, number][] = [
+			[0x01, 0x09], [0x02, 0x16], [0x03, 0x00], [0x04, 0x00],
+			[0x05, 0x17], [0x06, 0x02], [0x07, 0x2a], // 0x0a|0x20 for 28.8MHz xtal
+			[0x08, 0xff], [0x09, 0x6e], [0x0a, 0xb8], [0x0b, 0x82],
+			[0x0c, 0xfe], [0x0d, 0x01], [0x0e, 0x00], [0x0f, 0x00],
+			[0x10, 0x00], [0x11, 0x00], [0x12, 0x00], [0x13, 0x00],
+			[0x14, 0x50], [0x15, 0x01],
+		];
+		for (const [reg, val] of initRegs) {
+			await this.com.writeI2CReg(FC0013_I2C_ADDR, reg, val);
+		}
+	}
+
+	async setFrequency(freq: number): Promise<number> {
+		const freqMhz = freq / 1e6;
+
+		// VHF tracking filter
+		await this.setVhfTrack(freq);
+
+		// Band / VHF-UHF-GPS filter selection
+		const reg07 = await this.com.readI2CReg(FC0013_I2C_ADDR, 0x07);
+		const reg14 = await this.com.readI2CReg(FC0013_I2C_ADDR, 0x14);
+		if (freq < 300000000) {
+			// VHF: enable VHF filter, disable UHF+GPS
+			await this.com.writeI2CReg(FC0013_I2C_ADDR, 0x07, reg07 | 0x10);
+			await this.com.writeI2CReg(FC0013_I2C_ADDR, 0x14, reg14 & 0x1f);
+		} else if (freq <= 862000000) {
+			// UHF
+			await this.com.writeI2CReg(FC0013_I2C_ADDR, 0x07, reg07 & 0xef);
+			await this.com.writeI2CReg(FC0013_I2C_ADDR, 0x14, (reg14 & 0x1f) | 0x40);
+		} else {
+			// GPS
+			await this.com.writeI2CReg(FC0013_I2C_ADDR, 0x07, reg07 & 0xef);
+			await this.com.writeI2CReg(FC0013_I2C_ADDR, 0x14, (reg14 & 0x1f) | 0x20);
+		}
+
+		// Find multiplier and band regs
+		let multi = 2, reg5val = 0x0a, reg6val = 0x02;
+		for (const [maxFreq, m, r5, r6] of FC0013_BANDS) {
+			if (freq < maxFreq) { multi = m; reg5val = r5; reg6val = r6; break; }
+		}
+
+		const xdiv2 = this.xtalFreq / 2;
+		const fvco = freq * multi;
+
+		let xdiv = Math.floor(fvco / xdiv2);
+		if ((fvco - xdiv * xdiv2) >= (xdiv2 / 2)) xdiv++;
+
+		let pm = Math.floor(xdiv / 8);
+		let am = xdiv - 8 * pm;
+		if (am < 2) { am += 8; pm--; }
+		if (pm > 31) { am = am + 8 * (pm - 31); pm = 31; }
+		if (am > 15 || pm < 0x0b) {
+			console.warn(`FC0013: no valid PLL for ${(freq/1e6).toFixed(3)} MHz`);
+		}
+
+		// VCO high select
+		if (fvco >= 3060000000) reg6val |= 0x08;
+		// Clock out fix
+		reg6val |= 0x20;
+
+		// Fractional XIN
+		const fRem = fvco - Math.floor(fvco / xdiv2) * xdiv2;
+		let xin = Math.floor((fRem / 1000) * 32768 / (xdiv2 / 1000));
+		if (xin >= 16384) xin += 32768;
+		xin &= 0xffff;
+
+		// Write PLL regs 1-6
+		await this.com.writeI2CReg(FC0013_I2C_ADDR, 0x01, am);
+		await this.com.writeI2CReg(FC0013_I2C_ADDR, 0x02, pm);
+		await this.com.writeI2CReg(FC0013_I2C_ADDR, 0x03, (xin >> 8) & 0xff);
+		await this.com.writeI2CReg(FC0013_I2C_ADDR, 0x04, xin & 0xff);
+		await this.com.writeI2CReg(FC0013_I2C_ADDR, 0x05, reg5val | 0x07); // Realtek demod fix
+		await this.com.writeI2CReg(FC0013_I2C_ADDR, 0x06, reg6val | 0x80); // 8 MHz BW
+
+		// multi=64 requires extra bit in reg 0x11
+		const reg11 = await this.com.readI2CReg(FC0013_I2C_ADDR, 0x11);
+		await this.com.writeI2CReg(FC0013_I2C_ADDR, 0x11,
+			multi === 64 ? (reg11 | 0x04) : (reg11 & 0xfb));
+
+		// VCO calibration
+		await this.com.writeI2CReg(FC0013_I2C_ADDR, 0x0e, 0x80);
+		await this.com.writeI2CReg(FC0013_I2C_ADDR, 0x0e, 0x00);
+		await this.com.writeI2CReg(FC0013_I2C_ADDR, 0x0e, 0x00);
+
+		// VCO re-calibration if out of range
+		try {
+			const vcoCal = await this.com.readI2CReg(FC0013_I2C_ADDR, 0x0e);
+			const vcoTmp = vcoCal & 0x3f;
+			const highVco = fvco >= 3060000000;
+			if (highVco ? vcoTmp > 0x3c : vcoTmp < 0x02) {
+				const newReg6 = highVco ? (reg6val & ~0x08) : (reg6val | 0x08);
+				await this.com.writeI2CReg(FC0013_I2C_ADDR, 0x06, newReg6 | 0x80);
+				await this.com.writeI2CReg(FC0013_I2C_ADDR, 0x0e, 0x80);
+				await this.com.writeI2CReg(FC0013_I2C_ADDR, 0x0e, 0x00);
+			}
+		} catch (_) {
+			console.warn('FC0013: VCO calibration readback failed');
+		}
+
+		console.log(`FC0013: tuned to ${freqMhz.toFixed(3)} MHz (multi=${multi}, pm=${pm}, am=${am})`);
+		return freq;
+	}
+
+	private async setVhfTrack(freq: number): Promise<void> {
+		const cur = await this.com.readI2CReg(FC0013_I2C_ADDR, 0x1d);
+		const base = cur & 0xe3;
+		let bits: number;
+		if      (freq <= 177500000) bits = 0x1c; // track 7
+		else if (freq <= 184500000) bits = 0x18; // track 6
+		else if (freq <= 191500000) bits = 0x14; // track 5
+		else if (freq <= 198500000) bits = 0x10; // track 4
+		else if (freq <= 205500000) bits = 0x0c; // track 3
+		else if (freq <= 219500000) bits = 0x08; // track 2
+		else if (freq <  300000000) bits = 0x04; // track 1
+		else                        bits = 0x1c; // UHF/GPS
+		await this.com.writeI2CReg(FC0013_I2C_ADDR, 0x1d, base | bits);
+	}
+
+	async setAutoGain(): Promise<void> {
+		const cur = await this.com.readI2CReg(FC0013_I2C_ADDR, 0x0d);
+		await this.com.writeI2CReg(FC0013_I2C_ADDR, 0x0d, cur & ~0x08);
+		await this.com.writeI2CReg(FC0013_I2C_ADDR, 0x13, 0x0a); // fixed IF gain
+	}
+
+	async setManualGain(gain: number): Promise<void> {
+		// gain 0-50 → scale to gain table range (-9.9 to +19.7 dB = -99 to 197 tenths)
+		const tenths = Math.round(-99 + gain * (197 - (-99)) / 50);
+		let bestReg = FC0013_LNA_GAINS[0][1];
+		let bestDelta = Infinity;
+		for (const [t, r] of FC0013_LNA_GAINS) {
+			const d = Math.abs(tenths - t);
+			if (d < bestDelta) { bestDelta = d; bestReg = r; }
+		}
+		// Enable manual gain mode
+		const cur = await this.com.readI2CReg(FC0013_I2C_ADDR, 0x0d);
+		await this.com.writeI2CReg(FC0013_I2C_ADDR, 0x0d, cur | 0x08);
+		await this.com.writeI2CReg(FC0013_I2C_ADDR, 0x13, 0x0a); // fixed IF gain
+		// Write LNA gain bits into reg 0x14[4:0]
+		const reg14 = await this.com.readI2CReg(FC0013_I2C_ADDR, 0x14);
+		await this.com.writeI2CReg(FC0013_I2C_ADDR, 0x14, (reg14 & 0xe0) | bestReg);
+	}
+
+	async close(): Promise<void> {
+		// No specific shutdown for FC0013
+	}
+}
+
+// ── FC2580 Tuner ──────────────────────────────────────────────────
+// Source: tuner_fc2580.c (FCI / Terratec / GPL-2.0)
+const FC2580_I2C_ADDR = 0xac;
+const FC2580_CRYSTAL_KHZ = 16384; // 16.384 MHz internal crystal
+const FC2580_BORDER_FREQ = 2600000; // kHz — VCO band boundary
+
+class FC2580 {
+	private com: RtlCom;
+
+	constructor(com: RtlCom) {
+		this.com = com;
+	}
+
+	private async wr(reg: number, val: number): Promise<void> {
+		await this.com.writeI2CReg(FC2580_I2C_ADDR, reg, val);
+	}
+
+	private async rd(reg: number): Promise<number> {
+		return this.com.readI2CReg(FC2580_I2C_ADDR, reg);
+	}
+
+	async init(): Promise<void> {
+		// fc2580_set_init() with external AGC mode
+		const fxKhz = FC2580_CRYSTAL_KHZ;
+		await this.wr(0x00, 0x00);
+		await this.wr(0x12, 0x86);
+		await this.wr(0x14, 0x5c);
+		await this.wr(0x16, 0x3c);
+		await this.wr(0x1f, 0xd2);
+		await this.wr(0x09, 0xd7);
+		await this.wr(0x0b, 0xd5);
+		await this.wr(0x0c, 0x32);
+		await this.wr(0x0e, 0x43);
+		await this.wr(0x21, 0x0a);
+		await this.wr(0x22, 0x82);
+		// External AGC
+		await this.wr(0x45, 0x20);
+		await this.wr(0x4c, 0x02);
+		await this.wr(0x3f, 0x88);
+		await this.wr(0x02, 0x0e);
+		await this.wr(0x58, 0x14);
+		// Default filter: BW = 7.8 MHz
+		await this.setFilter(8, fxKhz);
+		console.log('FC2580: initialized');
+	}
+
+	async setFrequency(freq: number): Promise<number> {
+		// FC2580 frequency is in kHz internally
+		const fLoKhz = Math.round(freq / 1000);
+		const fxKhz = FC2580_CRYSTAL_KHZ;
+
+		// Band selection
+		const band = (fLoKhz > 1000000) ? 'L' : (fLoKhz > 400000) ? 'UHF' : 'VHF';
+
+		// Multiplier per band
+		const bandMult = (band === 'UHF') ? 4 : (band === 'L') ? 2 : 12;
+		const fVco = fLoKhz * bandMult;
+
+		// R value: choose reference divider so f_comp is in right range
+		const rVal = (fVco >= 2 * 76 * fxKhz) ? 1 : (fVco >= 76 * fxKhz) ? 2 : 4;
+		const fComp = fxKhz / rVal;
+
+		// N and K (fractional)
+		const nVal = Math.floor(fVco / 2 / fComp);
+		const fDiff = fVco - 2 * fComp * nVal;
+		const preShift = 4;
+		const fDiffShifted = fDiff << (20 - preShift);
+		const divisor = (2 * fComp) >> preShift;
+		let kVal = Math.floor(fDiffShifted / divisor);
+		if (fDiffShifted - kVal * divisor >= (fComp >> preShift)) kVal++;
+
+		// Build data_0x02: VCO band + R + band bits
+		let data02 = 0x0e; // USE_EXT_CLK=0, default
+		if (fVco >= FC2580_BORDER_FREQ) data02 |= 0x08; // high VCO
+
+		// Band-specific register writes
+		if (band === 'UHF') {
+			data02 = (data02 & 0x3f); // UHF band bits
+			await this.wr(0x25, 0xf0); await this.wr(0x27, 0x77); await this.wr(0x28, 0x53);
+			await this.wr(0x29, 0x60); await this.wr(0x30, 0x09); await this.wr(0x50, 0x8c);
+			await this.wr(0x53, 0x50);
+			await this.wr(0x5f, fLoKhz < 538000 ? 0x13 : 0x15);
+			if (fLoKhz < 538000) {
+				await this.wr(0x61, 0x07); await this.wr(0x62, 0x06); await this.wr(0x67, 0x06);
+				await this.wr(0x68, 0x08); await this.wr(0x69, 0x10); await this.wr(0x6a, 0x12);
+			} else if (fLoKhz < 794000) {
+				await this.wr(0x61, 0x03); await this.wr(0x62, 0x03); await this.wr(0x67, 0x03);
+				await this.wr(0x68, 0x05); await this.wr(0x69, 0x0c); await this.wr(0x6a, 0x0e);
+			} else {
+				await this.wr(0x61, 0x07); await this.wr(0x62, 0x06); await this.wr(0x67, 0x07);
+				await this.wr(0x68, 0x09); await this.wr(0x69, 0x10); await this.wr(0x6a, 0x12);
+			}
+			await this.wr(0x63, 0x15); await this.wr(0x6b, 0x0b); await this.wr(0x6c, 0x0c);
+			await this.wr(0x6d, 0x78); await this.wr(0x6e, 0x32); await this.wr(0x6f, 0x14);
+			await this.setFilter(8, fxKhz);
+			await this.wr(0x2d, fLoKhz <= 794000 ? 0x9f : 0x8f);
+		} else if (band === 'VHF') {
+			data02 = (data02 & 0x3f) | 0x80;
+			await this.wr(0x27, 0x77); await this.wr(0x28, 0x33); await this.wr(0x29, 0x40);
+			await this.wr(0x30, 0x09); await this.wr(0x50, 0x8c); await this.wr(0x53, 0x50);
+			await this.wr(0x5f, 0x0f); await this.wr(0x61, 0x07); await this.wr(0x62, 0x00);
+			await this.wr(0x63, 0x15); await this.wr(0x67, 0x03); await this.wr(0x68, 0x05);
+			await this.wr(0x69, 0x10); await this.wr(0x6a, 0x12); await this.wr(0x6b, 0x08);
+			await this.wr(0x6c, 0x0a); await this.wr(0x6d, 0x78); await this.wr(0x6e, 0x32);
+			await this.wr(0x6f, 0x54);
+			await this.setFilter(7, fxKhz);
+		} else { // L-band
+			data02 = (data02 & 0x3f) | 0x40;
+			await this.wr(0x2b, 0x70); await this.wr(0x2c, 0x37); await this.wr(0x2d, 0xe7);
+			await this.wr(0x30, 0x09); await this.wr(0x44, 0x20); await this.wr(0x50, 0x8c);
+			await this.wr(0x53, 0x50); await this.wr(0x5f, 0x0f); await this.wr(0x61, 0x0f);
+			await this.wr(0x62, 0x00); await this.wr(0x63, 0x13); await this.wr(0x67, 0x00);
+			await this.wr(0x68, 0x02); await this.wr(0x69, 0x0c); await this.wr(0x6a, 0x0e);
+			await this.wr(0x6b, 0x08); await this.wr(0x6c, 0x0a); await this.wr(0x6d, 0xa0);
+			await this.wr(0x6e, 0x50); await this.wr(0x6f, 0x14);
+			await this.setFilter(1, fxKhz);
+		}
+
+		// AGC clock pre-divide for xtal >= 28 MHz (always true for RTL-SDR 28.8MHz context
+		// but FC2580 uses internal 16.384 MHz, so this only applies if xtal > 28000 kHz - skip)
+
+		// VCO band + PLL programming
+		await this.wr(0x02, data02);
+		const rBits = (rVal === 1) ? 0x00 : (rVal === 2) ? 0x10 : 0x20;
+		await this.wr(0x18, rBits | ((kVal >> 16) & 0x0f));
+		await this.wr(0x1a, (kVal >> 8) & 0xff);
+		await this.wr(0x1b, kVal & 0xff);
+		await this.wr(0x1c, nVal & 0xff);
+
+		console.log(`FC2580: tuned to ${(freq/1e6).toFixed(3)} MHz (band=${band}, n=${nVal}, k=${kVal}, r=${rVal})`);
+		return freq;
+	}
+
+	private async setFilter(bw: number, fxKhz: number): Promise<void> {
+		// fc2580_set_filter() — bw: 1=1.53MHz, 6=6MHz, 7=6.8MHz, 8=7.8MHz
+		if (bw === 1) {
+			await this.wr(0x36, 0x1c);
+			await this.wr(0x37, Math.floor(4151 * fxKhz / 1000000) & 0xff);
+			await this.wr(0x39, 0x00);
+			await this.wr(0x2e, 0x09);
+		} else if (bw === 6) {
+			await this.wr(0x36, 0x18);
+			await this.wr(0x37, Math.floor(4400 * fxKhz / 1000000) & 0xff);
+			await this.wr(0x39, 0x00);
+			await this.wr(0x2e, 0x09);
+		} else if (bw === 7) {
+			await this.wr(0x36, 0x18);
+			await this.wr(0x37, Math.floor(3910 * fxKhz / 1000000) & 0xff);
+			await this.wr(0x39, 0x80);
+			await this.wr(0x2e, 0x09);
+		} else { // bw === 8, default
+			await this.wr(0x36, 0x18);
+			await this.wr(0x37, Math.floor(3300 * fxKhz / 1000000) & 0xff);
+			await this.wr(0x39, 0x80);
+			await this.wr(0x2e, 0x09);
+		}
+		// Poll calibration lock (up to 5 attempts)
+		for (let i = 0; i < 5; i++) {
+			const cal = await this.rd(0x2f);
+			if ((cal & 0xc0) === 0xc0) break;
+			await this.wr(0x2e, 0x01);
+			await this.wr(0x2e, 0x09);
+		}
+		await this.wr(0x2e, 0x01);
+	}
+
+	async setAutoGain(): Promise<void> {
+		// External AGC — registers already set in init(); nothing more needed
+	}
+
+	async setManualGain(_gain: number): Promise<void> {
+		// FC2580 doesn't expose a direct LNA gain register in this driver;
+		// gain is handled by the external AGC on the RTL2832U side.
+		console.warn('FC2580: manual gain not supported, using AGC');
+	}
+
+	async close(): Promise<void> {
+		// No specific shutdown sequence for FC2580
+	}
+}
+
 // ── Tuner interface ───────────────────────────────────────────────
 interface TunerDriver {
 	init(): Promise<void>;
@@ -1144,12 +1551,13 @@ export class RtlSdrDevice implements SdrDevice {
 		this.tunerName = detectedTuner;
 		console.log(`RTL-SDR: detected tuner: ${detectedTuner} at I2C 0x${detectedAddr.toString(16)}`);
 
-		if (detectedAddr === 0x34) {
-			// R820T/R820T2/R828D
-			this.tuner = new R820T(this.com, xtalFreq);
+		if (detectedAddr === 0x34 || detectedAddr === 0x74) {
+			// R820T / R820T2 (addr 0x34) or R828D (addr 0x74)
+			const isR828D = detectedAddr === 0x74;
+			this.tuner = new R820T(this.com, xtalFreq, detectedAddr, isR828D);
 			this.hasIfFreq = true;
 
-			// Set IF frequency offset for R820T
+			// Set IF frequency offset for R82xx family
 			const multiplier = -1 * Math.floor(IF_FREQ * (1 << 22) / xtalFreq);
 			await this.com.writeDemodReg(1, 0xb1, 0x1a, 1);
 			await this.com.writeDemodReg(0, 0x08, 0x4d, 1);
@@ -1157,8 +1565,14 @@ export class RtlSdrDevice implements SdrDevice {
 			await this.com.writeDemodReg(1, 0x1a, (multiplier >> 8) & 0xff, 1);
 			await this.com.writeDemodReg(1, 0x1b, multiplier & 0xff, 1);
 			await this.com.writeDemodReg(1, 0x15, 0x01, 1);
+		} else if (detectedAddr === 0xc6 && detectedTuner === 'FC0013') {
+			// FC0013 — zero-IF, same demod config as FC0012
+			this.tuner = new FC0013(this.com, xtalFreq);
+			this.hasIfFreq = false;
+			this.conjugateIq = false;
+			await this.setGpioOutput(6);
 		} else if (detectedAddr === 0xc6) {
-			// FC0012 or FC0013
+			// FC0012
 			this.tuner = new FC0012(this.com, xtalFreq);
 			this.hasIfFreq = false;
 			// FC0012 is zero-IF — no spectrum conjugation needed.
@@ -1174,6 +1588,11 @@ export class RtlSdrDevice implements SdrDevice {
 			//   0x08=0x4d (R820T ADC config) — not applicable to FC0012
 			//   0x15=0x01 (spectrum inversion) — FC0012 needs 0x00 (no inversion)
 			// The init baseline (0xb1=0x1b, 0x15=0x00) is correct for FC0012.
+		} else if (detectedAddr === 0xac) {
+			// FC2580 — zero-IF tuner using internal 16.384 MHz crystal
+			this.tuner = new FC2580(this.com);
+			this.hasIfFreq = false;
+			this.conjugateIq = false;
 		} else if (detectedTuner === 'E4000') {
 			// E4000 is a zero-IF tuner — same demod config as FC0012
 			this.tuner = new E4000(this.com, xtalFreq);
