@@ -49,44 +49,91 @@ const REG = {
 
 // ── R820T Tuner Constants ─────────────────────────────────────────
 const R820T_I2C_ADDR = 0x34;
+const R828D_I2C_ADDR = 0x74;
 const R820T_CHECK_VAL = 0x69;
+
+// Initial register values for R8xx (registers 0x05–0x1f, 27 bytes).
+// Matches R8xx.REGISTERS from jtarrio/webrtlsdr r8xx.ts.
 const R820T_INIT_REGS = [
-	0x83, 0x32, 0x75, 0xc0, 0x40, 0xd6, 0x6c,
-	0xf5, 0x63, 0x75, 0x68, 0x6c, 0x83, 0x80, 0x00,
-	0x0f, 0x00, 0xc0, 0x30, 0x48, 0xcc, 0x60, 0x00,
-	0x54, 0xae, 0x4a, 0xc0,
+	// 0x05: loop-through off, LNA auto, LNA gain 3
+	0b10000011,
+	// 0x06: power det 1 on, power det 3 off, filter gain +3dB, LNA pwr 2
+	0b00110010,
+	// 0x07: mixer pwr on, mixer current normal, mixer auto, mixer gain 5
+	0b01110101,
+	// 0x08: mixer buf pwr on, mixer buf low current, image gain adj 0
+	0b11000000,
+	// 0x09: IF filter off, IF filter low current, image phase adj 0
+	0b01000000,
+	// 0x0a: channel filter on, filter pwr 2, filter bw fine 6
+	0b11010110,
+	// 0x0b: filter bw coarse 3, high pass corner 12
+	0b01101100,
+	// 0x0c: VGA pwr on, VGA gain pin, VGA gain 5.5dB
+	0b11110101,
+	// 0x0d: LNA agc thresh high 0.94V, low 0.64V
+	0b01100011,
+	// 0x0e: mixer agc thresh high 1.04V, low 0.84V
+	0b01110101,
+	// 0x0f: LDO 3.0V, clock output off, internal agc clock on
+	0b01101000,
+	// 0x10: PLL to mixer div 1:1, PLL div 1, xtal swing low, no cap
+	0b01101100,
+	// 0x11: PLL analog reg 2.0V
+	0b10000011,
+	// 0x12
+	0b10000000,
+	// 0x13
+	0b00000000,
+	// 0x14: NI2C = 15
+	0b00001111,
+	// 0x15: SDM_IN[16:9]
+	0b00000000,
+	// 0x16: SDM_IN[8:1]
+	0b11000000,
+	// 0x17: PLL digital reg 1.8V, open drain high-Z
+	0b00110000,
+	// 0x18
+	0b01001000,
+	// 0x19: RF filter pwr on, agc_pin=agc_in
+	0b11001100,
+	// 0x1a: tracking filter bypass, PLL auto-tune 128kHz, RF filter highest
+	0b01100000,
+	// 0x1b: highest corner LPNF/LPF
+	0b00000000,
+	// 0x1c: power det 3 TOP 5
+	0b01010100,
+	// 0x1d: power det 1 TOP 5, power det 2 TOP 6
+	0b10101110,
+	// 0x1e: filter extension enable, power det timing control 10
+	0b01001010,
+	// 0x1f
+	0b11000000,
 ];
 
-// Full frequency range table from r82xx freq_ranges[] in tuner_r82xx.c
-// [startMHz, open_d (R17 bit3), rf_mux_ploy (R26), tf_c (R27)]
+// Multiplexer configurations per frequency band.
+// [startMHz, open_d (R0x17 bit3), rf_mux_ploy (R0x1a bits 7:6,1:0), tf_c (R0x1b)]
+// Matches STD_MUX_CFGS from jtarrio/webrtlsdr r8xx.ts.
 const MUX_CFGS: [number, number, number, number][] = [
-	[0,   0x08, 0x02, 0xdf],
-	[50,  0x08, 0x02, 0xbe],
-	[55,  0x08, 0x02, 0x8b],
-	[60,  0x08, 0x02, 0x7b],
-	[65,  0x08, 0x02, 0x69],
-	[70,  0x08, 0x02, 0x58],
-	[75,  0x00, 0x02, 0x44],
-	[80,  0x00, 0x02, 0x44],
-	[90,  0x00, 0x02, 0x34],
-	[100, 0x00, 0x02, 0x34],
-	[110, 0x00, 0x02, 0x24],
-	[120, 0x00, 0x02, 0x24],
-	[140, 0x00, 0x02, 0x14],
-	[180, 0x00, 0x02, 0x13],
-	[220, 0x00, 0x02, 0x13],
-	[250, 0x00, 0x02, 0x11],
-	[280, 0x00, 0x02, 0x00],
-	[310, 0x00, 0x41, 0x00],
-	[450, 0x00, 0x41, 0x00],
-	[588, 0x00, 0x40, 0x00],
-	[650, 0x00, 0x40, 0x00],
+	[0,   0b1000, 0b00000010, 0b11011111],
+	[50,  0b1000, 0b00000010, 0b10111110],
+	[55,  0b1000, 0b00000010, 0b10001011],
+	[60,  0b1000, 0b00000010, 0b01111011],
+	[65,  0b1000, 0b00000010, 0b01101001],
+	[70,  0b1000, 0b00000010, 0b01011000],
+	[75,  0b0000, 0b00000010, 0b01000100],
+	[90,  0b0000, 0b00000010, 0b00110100],
+	[110, 0b0000, 0b00000010, 0b00100100],
+	[140, 0b0000, 0b00000010, 0b00010100],
+	[180, 0b0000, 0b00000010, 0b00010011],
+	[250, 0b0000, 0b00000010, 0b00010001],
+	[280, 0b0000, 0b00000010, 0b00000000],
+	[310, 0b0000, 0b01000001, 0b00000000],
+	[588, 0b0000, 0b01000000, 0b00000000],
 ];
 
-// r82xx gain step tables (from tuner_r82xx.c r82xx_lna_gain_steps / r82xx_mixer_gain_steps)
-// Units: 0.1 dB per step
-const R82XX_LNA_GAIN_STEPS   = [0, 9, 13, 40, 38, 13, 31, 22, 26, 31, 26, 14, 19, 5, 35, 13];
-const R82XX_MIXER_GAIN_STEPS = [0, 5, 10, 10, 19,  9, 10, 25, 17, 10,  8, 16, 13, 6,  3, -8];
+// Experimentally: LNA goes in 2.3dB steps, Mixer in 1.2dB steps.
+// (matches setManualGain logic in jtarrio/webrtlsdr r8xx.ts)
 
 const BIT_REVS = [
 	0x0, 0x8, 0x4, 0xc, 0x2, 0xa, 0x6, 0xe,
@@ -212,10 +259,12 @@ class RtlCom {
 }
 
 // R82xx tuner family: R820T, R820T2, R828D
+// vcoPowerRef: 2 for R820T/R820T2, 1 for R828D (matches jtarrio/webrtlsdr)
 class R820T {
 	private com: RtlCom;
 	private xtalFreq: number;
 	private i2cAddr: number;
+	private vcoPowerRef: number; // R820T=2, R828D=1
 	private isR828D: boolean;
 	private shadowRegs!: Uint8Array;
 	private hasPllLock = false;
@@ -226,11 +275,8 @@ class R820T {
 		this.xtalFreq = xtalFreq;
 		this.i2cAddr = i2cAddr;
 		this.isR828D = isR828D;
-	}
-
-	static async check(com: RtlCom): Promise<boolean> {
-		const val = await com.readI2CReg(R820T_I2C_ADDR, 0);
-		return val === R820T_CHECK_VAL;
+		// R828D uses VCO power ref of 1; R820T/R820T2 uses 2
+		this.vcoPowerRef = isR828D ? 1 : 2;
 	}
 
 	private i2cWrite(reg: number, val: number) {
@@ -249,115 +295,165 @@ class R820T {
 		await this.initElectronics();
 	}
 
+	// setFrequency receives the raw user frequency (no IF offset).
+	// The IF offset is applied by the caller (RtlSdrDevice) before calling here.
 	async setFrequency(freq: number): Promise<number> {
+		// freq here already includes the IF offset added by RtlSdrDevice
 		await this.setMux(freq);
 		const result = await this.setPll(freq);
-		// R828D: switch between Cable1 and Air-In inputs at 345 MHz
-		// (same threshold as r82xx driver: 345 MHz)
+		// R828D: switch Cable1 LNA on/off at 345 MHz threshold
 		if (this.isR828D) {
-			const airIn = freq > 345000000 ? 0x00 : 0x60;
-			if (airIn !== this.lastInput) {
-				this.lastInput = airIn;
-				await this.writeRegMask(0x05, airIn, 0x60);
+			const input = freq > 345000000 ? 0x00 : 0x60;
+			if (input !== this.lastInput) {
+				this.lastInput = input;
+				await this.writeRegMask(0x05, input, 0x60);
 			}
 		}
 		return result;
 	}
 
 	async setAutoGain(): Promise<void> {
-		await this.writeEach([
-			[0x05, 0x00, 0x10], // LNA auto on
-			[0x07, 0x10, 0x10], // Mixer auto on
-			[0x0c, 0x0b, 0x9f], // VGA gain 26.5 dB
-		]);
+		// [4] lna gain auto
+		await this.writeRegMask(0x05, 0b00000000, 0b00010000);
+		// [4] mixer gain auto
+		await this.writeRegMask(0x07, 0b00010000, 0b00010000);
+		// [4] IF vga mode manual [3:0] IF vga gain 26.5dB
+		await this.writeRegMask(0x0c, 0b00001011, 0b10011111);
 	}
 
 	async setManualGain(gain: number): Promise<void> {
-		// Use r82xx cumulative LNA+mixer gain stepping algorithm
-		// gain 0-50 maps to 0-50 dB (in 0.1dB tenths: 0-500)
-		const targetTenths = gain * 10;
-		let totalGain = 0;
-		let lnaIndex = 0;
-		let mixIndex = 0;
-		for (let i = 0; i < 15; i++) {
-			if (totalGain >= targetTenths) break;
-			totalGain += R82XX_LNA_GAIN_STEPS[++lnaIndex];
-			if (totalGain >= targetTenths) break;
-			totalGain += R82XX_MIXER_GAIN_STEPS[++mixIndex];
-		}
-		await this.writeEach([
-			[0x05, 0x10, 0x10],         // LNA auto off
-			[0x07, 0x00, 0x10],         // Mixer auto off
-			[0x0c, 0x08, 0x9f],         // VGA gain 16.3 dB
-			[0x05, lnaIndex,  0x0f],    // set LNA gain index
-			[0x07, mixIndex,  0x0f],    // set Mixer gain index
-		]);
+		// Experimentally: LNA goes in 2.3dB steps, Mixer in 1.2dB steps
+		let fullsteps = Math.floor(gain / 3.5);
+		const halfsteps = gain - 3.5 * fullsteps >= 2.3 ? 1 : 0;
+		if (fullsteps < 0) fullsteps = 0;
+		if (fullsteps > 15) fullsteps = 15;
+		const lnaValue = fullsteps + (fullsteps === 15 ? 0 : halfsteps);
+		const mixerValue = fullsteps;
+		// [4] lna gain manual
+		await this.writeRegMask(0x05, 0b00010000, 0b00010000);
+		// [4] mixer gain manual
+		await this.writeRegMask(0x07, 0b00000000, 0b00010000);
+		// [4] vga mode manual [3:0] vga gain 16dB
+		await this.writeRegMask(0x0c, 0b00001000, 0b10011111);
+		// [3:0] lna gain
+		await this.writeRegMask(0x05, lnaValue, 0b00001111);
+		// [3:0] mixer gain
+		await this.writeRegMask(0x07, mixerValue, 0b00001111);
 	}
 
 	async close(): Promise<void> {
-		await this.writeEach([
-			[0x06, 0xb1, 0xff], [0x05, 0xb3, 0xff], [0x07, 0x3a, 0xff],
-			[0x08, 0x40, 0xff], [0x09, 0xc0, 0xff], [0x0a, 0x36, 0xff],
-			[0x0c, 0x35, 0xff], [0x0f, 0x68, 0xff], [0x11, 0x03, 0xff],
-			[0x17, 0xf4, 0xff], [0x19, 0x0c, 0xff],
-		]);
+		// Matches R8xx.close() from jtarrio/webrtlsdr
+		// [7] power det 1 off [6] power det 3 off [5] filter gain [2:0] LNA pwr 1
+		await this.writeRegMask(0x06, 0b10110001, 0xff);
+		// [7] loop through off [5] lna 1 pwr off [4] LNA gain manual [3:0] LNA gain 3
+		await this.writeRegMask(0x05, 0b10110011, 0xff);
+		// [6] mixer pwr off [5] mixer normal current [4] mixer gain auto [3:0] mixer gain 10
+		await this.writeRegMask(0x07, 0b00111010, 0xff);
+		// [7] mixer buf pwr off [6] mixer buf low current [5:0] image gain 0
+		await this.writeRegMask(0x08, 0b01000000, 0xff);
+		// [7] IF filter off [6] IF filter low current [5:0] image phase 0
+		await this.writeRegMask(0x09, 0b11000000, 0xff);
+		// [7] channel filter off [6:5] filter pwr 1 [3:0] filter bw 6
+		await this.writeRegMask(0x0a, 0b00111010, 0xff);
+		// [6] vga pwr off [4] vga controlled by pin [3:0] vga gain 5
+		await this.writeRegMask(0x0c, 0b00110101, 0xff);
+		// [4] clock output on [1] internal agc clock on
+		await this.writeRegMask(0x0f, 0b01101000, 0xff);
+		// [7:6] pll analog reg off
+		await this.writeRegMask(0x11, 0b00000011, 0xff);
+		// [7:6] pll digital reg off [3] open drain high-Z
+		await this.writeRegMask(0x17, 0b11110100, 0xff);
+		// [7] rf filter pwr off [4] agc pin = agc_in
+		await this.writeRegMask(0x19, 0b00001100, 0xff);
 	}
 
 	private async initElectronics(): Promise<void> {
-		await this.writeEach([
-			[0x0c, 0x00, 0x0f],
-			[0x13, 49, 0x3f],
-			[0x1d, 0x00, 0x38],
-		]);
-		const filterCap = await this.calibrateFilter(true);
-		await this.writeEach([
-			[0x0a, 0x10 | filterCap, 0x1f],
-			[0x0b, 0x6b, 0xef],
-			[0x07, 0x00, 0x80],
-			[0x06, 0x10, 0x30],
-			[0x1e, 0x40, 0x60],
-			[0x05, 0x00, 0x80],
-			[0x1f, 0x00, 0x80],
-			[0x0f, 0x00, 0x80],
-			[0x19, 0x60, 0x60],
-			[0x1d, 0xe5, 0xc7],
-			[0x1c, 0x24, 0xf8],
-			[0x0d, 0x53, 0xff],
-			[0x0e, 0x75, 0xff],
-			[0x05, 0x00, 0x60],
-			[0x06, 0x00, 0x08],
-			[0x11, 0x38, 0x08],
-			[0x17, 0x30, 0x30],
-			[0x0a, 0x40, 0x60],
-			[0x1d, 0x00, 0x38],
-			[0x1c, 0x00, 0x04],
-			[0x06, 0x00, 0x40],
-			[0x1a, 0x30, 0x30],
-			[0x1d, 0x18, 0x38],
-			[0x1c, 0x24, 0x04],
-			[0x1e, 0x0d, 0x1f],
-			[0x1a, 0x20, 0x30],
-		]);
+		// Matches R8xx._initElectronics() from jtarrio/webrtlsdr
+		// [3:0] IF vga -12dB
+		await this.writeRegMask(0x0c, 0b00000000, 0b00001111);
+		// [5:0] VCO bank 49
+		await this.writeRegMask(0x13, 0b00110001, 0b00111111);
+		// [5:3] power detector 1 TOP 0
+		await this.writeRegMask(0x1d, 0b00000000, 0b00111000);
+		const filterCap = await this.calibrateFilter();
+		// [4] channel filter high Q [3:0] filter bw manual fine tune
+		await this.writeRegMask(0x0a, 0b00010000 | filterCap, 0b00011111);
+		// [7:5] filter bw coarse 3 [3:0] high pass corner 11
+		await this.writeRegMask(0x0b, 0b01101011, 0b11101111);
+		// [7] mixer sideband lower
+		await this.writeRegMask(0x07, 0b00000000, 0b10000000);
+		// [5] filter gain 0dB [4] mixer filter 6MHz on
+		await this.writeRegMask(0x06, 0b00010000, 0b00110000);
+		// [6] filter extension enable [5] channel filter extension @ LNA max
+		await this.writeRegMask(0x1e, 0b01000000, 0b01100000);
+		// [7] loop through on
+		await this.writeRegMask(0x05, 0b00000000, 0b10000000);
+		// [7] loop through attenuation enable
+		await this.writeRegMask(0x1f, 0b00000000, 0b10000000);
+		// [7] filter extension widest off
+		await this.writeRegMask(0x0f, 0b00000000, 0b10000000);
+		// [6:5] RF poly filter current min
+		await this.writeRegMask(0x19, 0b01100000, 0b01100000);
+		// [7:6] LNA narrow band pwr det lowest BW [2:0] pwr det 2 TOP 5
+		await this.writeRegMask(0x1d, 0b11100101, 0b11000111);
+		// [7:4] pwr det 3 TOP 4
+		await this.writeRegMask(0x1c, 0b00100100, 0b11111000);
+		// [7:4] LNA agc pwr det threshold high 0.84V [3:0] low 0.64V
+		await this.writeRegMask(0x0d, 0b01010011, 0b11111111);
+		// [7:4] mixer agc pwr det threshold high 1.04V [3:0] low 0.84V
+		await this.writeRegMask(0x0e, 0b01110101, 0b11111111);
+		// [6] cable 1 LNA off [5] LNA 1 pwr on
+		await this.writeRegMask(0x05, 0b00000000, 0b01100000);
+		// [3] cable 2 LNA off
+		await this.writeRegMask(0x06, 0b00000000, 0b00001000);
+		// [3] prescale
+		await this.writeRegMask(0x11, 0b00111000, 0b00001000);
+		// [5:4] prescale 45 current 150u
+		await this.writeRegMask(0x17, 0b00110000, 0b00110000);
+		// [6:5] filter pwr 2
+		await this.writeRegMask(0x0a, 0b01000000, 0b01100000);
+		// [5:3] pwr det 1 TOP 0
+		await this.writeRegMask(0x1d, 0b00000000, 0b00111000);
+		// [2] LNA pwr det mode normal
+		await this.writeRegMask(0x1c, 0b00000000, 0b00000100);
+		// [6] LNA pwr det narrow band off
+		await this.writeRegMask(0x06, 0b00000000, 0b01000000);
+		// [5:4] AGC clock 20ms
+		await this.writeRegMask(0x1a, 0b00110000, 0b00110000);
+		// [5:3] pwr det 1 TOP 3
+		await this.writeRegMask(0x1d, 0b00011000, 0b00111000);
+		// [2] LNA pwr det 1 low discharge
+		await this.writeRegMask(0x1c, 0b00100100, 0b00000100);
+		// [4:0] LNA discharge current 13
+		await this.writeRegMask(0x1e, 0b00001101, 0b00011111);
+		// [5:4] AGC clock 80ms
+		await this.writeRegMask(0x1a, 0b00100000, 0b00110000);
 	}
 
-	private async calibrateFilter(firstTry: boolean): Promise<number> {
-		await this.writeEach([
-			[0x0b, 0x6b, 0x60],
-			[0x0f, 0x04, 0x04],
-			[0x10, 0x00, 0x03],
-		]);
-		await this.setPll(56000000);
-		if (!this.hasPllLock) throw new Error('PLL not locked during filter calibration');
-		await this.writeEach([
-			[0x0b, 0x10, 0x10],
-			[0x0b, 0x00, 0x10],
-			[0x0f, 0x00, 0x04],
-		]);
-		const data = await this.readRegBuffer(0x00, 5);
-		let filterCap = data[4] & 0x0f;
-		if (filterCap === 0x0f) filterCap = 0;
-		if (filterCap !== 0 && firstTry) return this.calibrateFilter(false);
-		return filterCap;
+	private async calibrateFilter(): Promise<number> {
+		let firstTry = true;
+		while (true) {
+			// [6:5] filter bw manual coarse narrowest
+			await this.writeRegMask(0x0b, 0b01100000, 0b01100000);
+			// [2] channel filter calibration clock on
+			await this.writeRegMask(0x0f, 0b00000100, 0b00000100);
+			// [1:0] xtal cap setting -> no cap
+			await this.writeRegMask(0x10, 0b00000000, 0b00000011);
+			await this.setPll(56000000);
+			if (!this.hasPllLock) throw new Error('R82xx: PLL not locked during filter calibration');
+			// [4] channel filter calibration start
+			await this.writeRegMask(0x0b, 0b00010000, 0b00010000);
+			// [4] channel filter calibration reset
+			await this.writeRegMask(0x0b, 0b00000000, 0b00010000);
+			// [2] channel filter calibration clock off
+			await this.writeRegMask(0x0f, 0b00000000, 0b00000100);
+			const data = await this.readRegBuffer(0x00, 5);
+			// [3:0] filter calibration code
+			let filterCap = data[4] & 0b00001111;
+			if (filterCap === 0b00001111) filterCap = 0;
+			if (filterCap === 0 || !firstTry) return filterCap;
+			firstTry = false;
+		}
 	}
 
 	private async setMux(freq: number): Promise<void> {
@@ -367,30 +463,37 @@ class R820T {
 			if (freqMhz < MUX_CFGS[i + 1][0]) break;
 		}
 		const cfg = MUX_CFGS[i];
-		await this.writeEach([
-			[0x17, cfg[1], 0x08],
-			[0x1a, cfg[2], 0xc3],
-			[0x1b, cfg[3], 0xff],
-			[0x10, 0x00, 0x0b],
-			[0x08, 0x00, 0x3f],
-			[0x09, 0x00, 0x3f],
-		]);
+		// [3] open drain
+		await this.writeRegMask(0x17, cfg[1], 0b00001000);
+		// [7:6] tracking filter [1:0] RF filter
+		await this.writeRegMask(0x1a, cfg[2], 0b11000011);
+		// [7:4] LPNF [3:0] LPF
+		await this.writeRegMask(0x1b, cfg[3], 0b11111111);
+		// [3] xtal swing high [1:0] xtal setting no cap
+		await this.writeRegMask(0x10, 0b00000000, 0b00001011);
+		// [5:0] image gain 0
+		await this.writeRegMask(0x08, 0b00000000, 0b00111111);
+		// [5:0] image phase 0
+		await this.writeRegMask(0x09, 0b00000000, 0b00111111);
 	}
 
 	private async setPll(freq: number): Promise<number> {
 		const pllRef = Math.floor(this.xtalFreq);
-		await this.writeEach([
-			[0x10, 0x00, 0x10],
-			[0x1a, 0x00, 0x0c],
-			[0x12, 0x80, 0xe0],
-		]);
+		// [4] PLL reference divider 1:1
+		await this.writeRegMask(0x10, 0b00000000, 0b00010000);
+		// [3:2] PLL auto tune clock rate 128 kHz
+		await this.writeRegMask(0x1a, 0b00000000, 0b00001100);
+		// [7:5] VCO core power 4 (mid)
+		await this.writeRegMask(0x12, 0b10000000, 0b11100000);
 		let divNum = Math.min(6, Math.floor(Math.log(1770000000 / freq) / Math.LN2));
 		const mixDiv = 1 << (divNum + 1);
 		const data = await this.readRegBuffer(0x00, 5);
+		// [5:4] VCO fine tune — compare against vcoPowerRef (2 for R820T, 1 for R828D)
 		const vcoFineTune = (data[4] & 0x30) >> 4;
-		if (vcoFineTune > 2) --divNum;
-		else if (vcoFineTune < 2) ++divNum;
-		await this.writeRegMask(0x10, divNum << 5, 0xe0);
+		if (vcoFineTune > this.vcoPowerRef) --divNum;
+		else if (vcoFineTune < this.vcoPowerRef) ++divNum;
+		// [7:5] pll to mixer divider
+		await this.writeRegMask(0x10, divNum << 5, 0b11100000);
 
 		const vcoFreq = freq * mixDiv;
 		const nint = Math.floor(vcoFreq / (2 * pllRef));
@@ -400,28 +503,39 @@ class R820T {
 
 		const ni = Math.floor((nint - 13) / 4);
 		const si = (nint - 13) % 4;
-		await this.writeEach([
-			[0x14, ni + (si << 6), 0xff],
-			[0x12, vcoFra === 0 ? 0x08 : 0x00, 0x08],
-		]);
+		// [7:6] si2c [5:0] ni2c
+		await this.writeRegMask(0x14, ni + (si << 6), 0xff);
+		// [4] sigma delta dither (0 on)
+		await this.writeRegMask(0x12, vcoFra === 0 ? 0b1000 : 0b0000, 0b00001000);
 		const sdm = Math.min(65535, Math.floor(32768 * vcoFra / pllRef));
-		await this.writeEach([
-			[0x16, sdm >> 8, 0xff],
-			[0x15, sdm & 0xff, 0xff],
-		]);
-		await this.getPllLock(true);
-		await this.writeRegMask(0x1a, 0x08, 0x08);
+		// SDM high
+		await this.writeRegMask(0x16, sdm >> 8, 0xff);
+		// SDM low
+		await this.writeRegMask(0x15, sdm & 0xff, 0xff);
+		await this.getPllLock();
+		// [3] PLL auto tune clock rate 8 kHz
+		await this.writeRegMask(0x1a, 0b00001000, 0b00001000);
 		return 2 * pllRef * (nint + sdm / 65536) / mixDiv;
 	}
 
-	private async getPllLock(firstTry: boolean): Promise<void> {
-		const data = await this.readRegBuffer(0x00, 3);
-		if (data[2] & 0x40) { this.hasPllLock = true; return; }
-		if (firstTry) {
-			await this.writeRegMask(0x12, 0x60, 0xe0);
-			return this.getPllLock(false);
+	private async getPllLock(): Promise<void> {
+		let firstTry = true;
+		while (true) {
+			const data = await this.readRegBuffer(0x00, 3);
+			// [6] pll lock?
+			if (data[2] & 0b01000000) {
+				this.hasPllLock = true;
+				return;
+			}
+			if (!firstTry) {
+				// Accept after second attempt regardless (matches reference behavior)
+				this.hasPllLock = true;
+				return;
+			}
+			// [7:5] VCO core power 3
+			await this.writeRegMask(0x12, 0b01100000, 0b11100000);
+			firstTry = false;
 		}
-		this.hasPllLock = false;
 	}
 
 	private async readRegBuffer(addr: number, length: number): Promise<Uint8Array> {
@@ -1554,6 +1668,8 @@ export class RtlSdrDevice implements SdrDevice {
 		if (detectedAddr === 0x34 || detectedAddr === 0x74) {
 			// R820T / R820T2 (addr 0x34) or R828D (addr 0x74)
 			const isR828D = detectedAddr === 0x74;
+			const tunerLabel = isR828D ? 'R828D' : 'R820T/R820T2';
+			console.log(`RTL-SDR: initializing ${tunerLabel} (vcoPowerRef=${isR828D ? 1 : 2})`);
 			this.tuner = new R820T(this.com, xtalFreq, detectedAddr, isR828D);
 			this.hasIfFreq = true;
 
@@ -1671,8 +1787,10 @@ export class RtlSdrDevice implements SdrDevice {
 					await this.setGpioBit(6, freqHz > 300000000);
 				}
 				await this.com.openI2C();
-				const tuneFreq = this.hasIfFreq ? freqHz + IF_FREQ : freqHz;
-				await this.tuner.setFrequency(tuneFreq);
+				// R820T/R828D: the R820T class expects the raw user frequency.
+				// The IF offset is applied internally in the RTL2832U demod registers
+				// (set during open() at lines 1562–1567). Do NOT double-offset here.
+				await this.tuner.setFrequency(freqHz);
 				await this.com.closeI2C();
 			} finally {
 				this.resumeRx();
