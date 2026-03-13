@@ -266,15 +266,17 @@ class R820T {
 	private i2cAddr: number;
 	private vcoPowerRef: number; // R820T=2, R828D=1
 	private isR828D: boolean;
+	private isBlogV4: boolean;
 	private shadowRegs!: Uint8Array;
 	private hasPllLock = false;
 	private lastInput = -1; // R828D antenna input tracking
 
-	constructor(com: RtlCom, xtalFreq: number, i2cAddr = R820T_I2C_ADDR, isR828D = false) {
+	constructor(com: RtlCom, xtalFreq: number, i2cAddr = R820T_I2C_ADDR, isR828D = false, isBlogV4 = false) {
 		this.com = com;
 		this.xtalFreq = xtalFreq;
 		this.i2cAddr = i2cAddr;
 		this.isR828D = isR828D;
+		this.isBlogV4 = isBlogV4;
 		// R828D uses VCO power ref of 1; R820T/R820T2 uses 2
 		this.vcoPowerRef = isR828D ? 1 : 2;
 	}
@@ -298,18 +300,34 @@ class R820T {
 	// setFrequency receives the raw user frequency (no IF offset).
 	// The IF offset is applied by the caller (RtlSdrDevice) before calling here.
 	async setFrequency(freq: number): Promise<number> {
-		// freq here already includes the IF offset added by RtlSdrDevice
-		await this.setMux(freq);
-		const result = await this.setPll(freq);
-		// R828D: switch Cable1 LNA on/off at 345 MHz threshold
-		if (this.isR828D) {
-			const input = freq > 345000000 ? 0x00 : 0x60;
-			if (input !== this.lastInput) {
-				this.lastInput = input;
-				await this.writeRegMask(0x05, input, 0x60);
+		if (this.isBlogV4) {
+			const upconvertFreq = freq <= 28800000 ? freq + 28800000 : freq;
+			await this.setMux(upconvertFreq);
+
+			const notchOff = (freq <= 2200000) || (freq >= 85000000 && freq <= 112000000) || (freq >= 172000000 && freq <= 242000000);
+			await this.writeRegMask(0x17, notchOff ? 0x00 : 0x08, 0x08);
+
+			const band = freq <= 28800000 ? 0 : (freq < 250000000 ? 1 : 2);
+			if (band !== this.lastInput) {
+				this.lastInput = band;
+				await this.writeRegMask(0x06, band === 0 ? 0x08 : 0x00, 0x08); // cable2
+				await this.writeRegMask(0x05, band === 1 ? 0x40 : 0x00, 0x40); // cable1
+				await this.writeRegMask(0x05, band === 2 ? 0x20 : 0x00, 0x20); // air_in
 			}
+			return await this.setPll(upconvertFreq);
+		} else {
+			await this.setMux(freq);
+			const result = await this.setPll(freq);
+			// R828D: switch Cable1 LNA on/off at 345 MHz threshold
+			if (this.isR828D) {
+				const input = freq > 345000000 ? 0x00 : 0x60;
+				if (input !== this.lastInput) {
+					this.lastInput = input;
+					await this.writeRegMask(0x05, input, 0x60);
+				}
+			}
+			return result;
 		}
-		return result;
 	}
 
 	async setAutoGain(): Promise<void> {
@@ -317,8 +335,14 @@ class R820T {
 		await this.writeRegMask(0x05, 0b00000000, 0b00010000);
 		// [4] mixer gain auto
 		await this.writeRegMask(0x07, 0b00010000, 0b00010000);
-		// [4] IF vga mode manual [3:0] IF vga gain 26.5dB
-		await this.writeRegMask(0x0c, 0b00001011, 0b10011111);
+		
+		if (this.isBlogV4) {
+			// VGA auto control does not work well on V4 (spectrum pumping). Fix to 0x08.
+			await this.writeRegMask(0x0c, 0x08, 0x9f);
+		} else {
+			// [4] IF vga mode manual [3:0] IF vga gain 26.5dB
+			await this.writeRegMask(0x0c, 0b00001011, 0b10011111);
+		}
 	}
 
 	async setManualGain(gain: number): Promise<void> {
@@ -499,7 +523,7 @@ class R820T {
 		const nint = Math.floor(vcoFreq / (2 * pllRef));
 		const vcoFra = vcoFreq % (2 * pllRef);
 
-		if (nint > 63) { this.hasPllLock = false; return 0; }
+		if (nint > (128 / this.vcoPowerRef) - 1) { this.hasPllLock = false; return 0; }
 
 		const ni = Math.floor((nint - 13) / 4);
 		const si = (nint - 13) % 4;
@@ -1668,13 +1692,17 @@ export class RtlSdrDevice implements SdrDevice {
 		if (detectedAddr === 0x34 || detectedAddr === 0x74) {
 			// R820T / R820T2 (addr 0x34) or R828D (addr 0x74)
 			const isR828D = detectedAddr === 0x74;
-			const tunerLabel = isR828D ? 'R828D' : 'R820T/R820T2';
-			console.log(`RTL-SDR: initializing ${tunerLabel} (vcoPowerRef=${isR828D ? 1 : 2})`);
-			this.tuner = new R820T(this.com, xtalFreq, detectedAddr, isR828D);
+			const isBlogV4 = isR828D && (this.dev.productName?.includes('V4') || false);
+			// Blog V4 uses 28.8MHz, but standard R828D uses 16MHz clock
+			const tunerFreq = (isR828D && !isBlogV4) ? 16000000 : xtalFreq;
+			
+			const tunerLabel = isBlogV4 ? 'R828D (Blog V4)' : (isR828D ? 'R828D' : 'R820T/R820T2');
+			console.log(`RTL-SDR: initializing ${tunerLabel} (vcoPowerRef=${isR828D ? 1 : 2}, xtal=${tunerFreq})`);
+			this.tuner = new R820T(this.com, tunerFreq, detectedAddr, isR828D, isBlogV4);
 			this.hasIfFreq = true;
 
 			// Set IF frequency offset for R82xx family
-			const multiplier = -1 * Math.floor(IF_FREQ * (1 << 22) / xtalFreq);
+			const multiplier = -1 * Math.floor(IF_FREQ * (1 << 22) / tunerFreq);
 			await this.com.writeDemodReg(1, 0xb1, 0x1a, 1);
 			await this.com.writeDemodReg(0, 0x08, 0x4d, 1);
 			await this.com.writeDemodReg(1, 0x19, (multiplier >> 16) & 0x3f, 1);
