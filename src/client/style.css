@@ -2173,6 +2173,15 @@ canvas {
 		color: #e0e0e0;
 		letter-spacing: 1px;
 		white-space: nowrap;
+		background: transparent;
+		border: none;
+		outline: none;
+		width: 94px;
+		text-align: right;
+		padding: 0;
+	}
+	.vfo-bottom-freq:focus {
+		color: #00ffea;
 	}
 
 	.top-controls {
