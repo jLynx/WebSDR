@@ -140,12 +140,21 @@ export const remoteMethods = {
 				}
 				this.saveSetting();
 
-				// Send country info to host
-				fetch('/api/geo').then((r: Response) => r.json()).then((data: any) => {
-					if (this._webrtc) this._webrtc.sendCommand({ type: 'clientInfo', country: data.country || 'XX' });
-				}).catch(() => {});
 				// Start local processing stream using mock device hooked up to WebRTC
 				this.startStream();
+
+				// Send country info + persistent device ID to host so it can
+				// detect reconnections from the same device and kick stale peers.
+				let deviceId = localStorage.getItem('browsdr-device-id');
+				if (!deviceId) {
+					try { deviceId = crypto.randomUUID(); } catch (_) { deviceId = Math.random().toString(36).substring(2) + Date.now().toString(36); }
+					localStorage.setItem('browsdr-device-id', deviceId);
+				}
+				fetch('/api/geo').then((r: Response) => r.json()).then((data: any) => {
+					if (this._webrtc) this._webrtc.sendCommand({ type: 'clientInfo', country: data.country || 'XX', deviceId });
+				}).catch(() => {
+					if (this._webrtc) this._webrtc.sendCommand({ type: 'clientInfo', country: 'XX', deviceId });
+				});
 			} else if (status.status === 'disconnected') {
 				this.remoteStatus = 'Disconnected from Host';
 				this.disconnect();
@@ -254,7 +263,19 @@ export const remoteMethods = {
 		} else if (cmd.type === 'clientInfo') {
 			if (this.remoteMode === 'host' && clientId) {
 				const rc = this.remoteClients.find((c: any) => c.id === clientId);
-				if (rc) rc.country = cmd.country || 'XX';
+				if (rc) {
+					rc.country = cmd.country || 'XX';
+					// Detect reconnection from same device: if another client
+					// already has this deviceId, kick the stale one.
+					if (cmd.deviceId) {
+						rc.deviceId = cmd.deviceId;
+						const stale = this.remoteClients.find((c: any) => c.deviceId === cmd.deviceId && c.id !== clientId);
+						if (stale) {
+							console.log(`[WebRTC] Device ${cmd.deviceId.substring(0, 8)} reconnected, kicking stale peer ${stale.id.substring(0, 8)}`);
+							this.kickRemoteClient(stale.id);
+						}
+					}
+				}
 			}
 		} else if (cmd.type === 'vfoUpdate') {
 			if (this.remoteMode === 'host' && clientId) {
