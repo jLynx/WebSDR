@@ -168,7 +168,12 @@ export const connectionMethods = {
 				this.gainNode = null;
 			}
 			this._releaseWakeLock();
-			if ('mediaSession' in navigator) navigator.mediaSession.playbackState = 'paused';
+			if ('mediaSession' in navigator) {
+				navigator.mediaSession.playbackState = 'paused';
+				navigator.mediaSession.setActionHandler('play', null);
+				navigator.mediaSession.setActionHandler('pause', null);
+				navigator.mediaSession.setActionHandler('stop', null);
+			}
 		} else {
 			this.startStream(isRestart);
 		}
@@ -255,6 +260,18 @@ export const connectionMethods = {
 		if ('mediaSession' in navigator) {
 			navigator.mediaSession.metadata = new MediaMetadata({ title: 'WebSDR', artist: 'Receiving' });
 			navigator.mediaSession.playbackState = 'playing';
+			// Action handlers are REQUIRED for Chrome on Android to show the media notification.
+			// Without at least play+pause registered, the notification never appears.
+			navigator.mediaSession.setActionHandler('play', () => {
+				if (this._mediaAudioEl) this._mediaAudioEl.play().catch(() => {});
+				if (this.audioCtx?.state === 'suspended') this.audioCtx.resume().catch(() => {});
+				navigator.mediaSession.playbackState = 'playing';
+			});
+			navigator.mediaSession.setActionHandler('pause', () => {
+				// Don't actually pause — just keep showing the notification (user can stop from the UI)
+				navigator.mediaSession.playbackState = 'playing';
+			});
+			navigator.mediaSession.setActionHandler('stop', () => { this.togglePlay(); });
 		}
 
 		// Add additional VFOs beyond the first (which is created by default in the worker).

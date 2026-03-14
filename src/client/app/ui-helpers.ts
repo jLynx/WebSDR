@@ -141,6 +141,7 @@ export const uiHelperMethods = {
 				this.gainNode.connect(mediaDest);
 				const audio = document.createElement('audio');
 				audio.srcObject = mediaDest.stream;
+				audio.setAttribute('playsinline', '');
 				audio.style.cssText = 'position:absolute;width:0;height:0;';
 				document.body.appendChild(audio);
 				audio.play().catch(() => {});
