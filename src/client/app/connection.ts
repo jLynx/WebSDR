@@ -156,13 +156,29 @@ export const connectionMethods = {
 			this.running = false;
 			if (this._statsTimer) { clearInterval(this._statsTimer); this._statsTimer = null; }
 			this.dspStats = null;
+			if (this._mediaAudioEl) {
+				this._mediaAudioEl.pause();
+				if (this._mediaSource && this._mediaSource.readyState === 'open') {
+					try { this._mediaSource.endOfStream(); } catch (_) {}
+				}
+				this._mediaSource = null;
+				this._silentMp3Data = null;
+				this._mediaAudioEl.src = '';
+				this._mediaAudioEl.remove();
+				this._mediaAudioEl = null;
+			}
 			if (this.audioCtx) {
 				try { await this.audioCtx.close(); } catch (_: any) { }
 				this.audioCtx = null;
 				this.gainNode = null;
 			}
 			this._releaseWakeLock();
-			if ('mediaSession' in navigator) navigator.mediaSession.playbackState = 'paused';
+			if ('mediaSession' in navigator) {
+				navigator.mediaSession.playbackState = 'paused';
+				navigator.mediaSession.setActionHandler('play', null);
+				navigator.mediaSession.setActionHandler('pause', null);
+				navigator.mediaSession.setActionHandler('stop', null);
+			}
 		} else {
 			this.startStream(isRestart);
 		}
@@ -247,8 +263,28 @@ export const connectionMethods = {
 
 		await this._acquireWakeLock();
 		if ('mediaSession' in navigator) {
-			navigator.mediaSession.metadata = new MediaMetadata({ title: 'WebSDR', artist: 'Receiving' });
+			navigator.mediaSession.metadata = new MediaMetadata({
+				title: 'BrowSDR',
+				artist: 'Receiving',
+				artwork: [
+					{ src: '/icon-96.png', sizes: '96x96', type: 'image/png' },
+					{ src: '/icon-192.png', sizes: '192x192', type: 'image/png' },
+					{ src: '/icon-512.png', sizes: '512x512', type: 'image/png' },
+				],
+			});
 			navigator.mediaSession.playbackState = 'playing';
+			// Action handlers are REQUIRED for Chrome on Android to show the media notification.
+			// Without at least play+pause registered, the notification never appears.
+			navigator.mediaSession.setActionHandler('play', () => {
+				if (this._mediaAudioEl) this._mediaAudioEl.play().catch(() => {});
+				if (this.audioCtx?.state === 'suspended') this.audioCtx.resume().catch(() => {});
+				navigator.mediaSession.playbackState = 'playing';
+			});
+			navigator.mediaSession.setActionHandler('pause', () => {
+				// Don't actually pause — just keep showing the notification (user can stop from the UI)
+				navigator.mediaSession.playbackState = 'playing';
+			});
+			navigator.mediaSession.setActionHandler('stop', () => { this.togglePlay(); });
 		}
 
 		// Add additional VFOs beyond the first (which is created by default in the worker).

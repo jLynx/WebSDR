@@ -131,12 +131,66 @@ export const uiHelperMethods = {
 			this.gainNode = this.audioCtx.createGain();
 			this.gainNode.gain.value = 1.0;
 			this.gainNode.connect(this.audioCtx.destination);
+
+			// A silent audio stream keeps Android/iOS from suspending the browser when
+			// the screen locks. Uses MediaSource (duration=Infinity) for a radio-style
+			// notification on Android, with MP3 loop fallback for iOS.
+			this._mediaAudioEl = this._createSilentAudioEl();
+			this._mediaAudioEl.play().catch(() => {});
+
 			this.nextPlayTime = 0;
 			this.audioRingBuf = new Float32Array(4800);
 			this.audioRingPos = 0;
 		}
 		if (this.audioCtx.state === 'suspended') {
 			this.audioCtx.resume().catch((e: any) => console.warn('AudioContext resume blocked:', e));
+			if (this._mediaAudioEl) this._mediaAudioEl.play().catch(() => {});
 		}
+	},
+	_createSilentAudioEl(this: AppInstance): HTMLAudioElement {
+		const el = document.createElement('audio');
+		el.setAttribute('playsinline', '');
+		el.style.cssText = 'position:absolute;width:0;height:0;';
+		document.body.appendChild(el);
+
+		// Use MediaSource with duration=Infinity so Chrome Android shows a
+		// radio-style notification (pause only, no seek/progress bar).
+		// el.src (not srcObject) is required for Chrome to show the notification.
+		if (typeof MediaSource !== 'undefined' && MediaSource.isTypeSupported('audio/mpeg')) {
+			const ms = new MediaSource();
+			this._mediaSource = ms;
+			el.src = URL.createObjectURL(ms);
+			ms.addEventListener('sourceopen', () => {
+				const sb = ms.addSourceBuffer('audio/mpeg');
+				ms.duration = Infinity;
+				fetch('/30-seconds-of-silence.mp3')
+					.then(r => r.arrayBuffer())
+					.then(mp3Data => {
+						this._silentMp3Data = mp3Data;
+						sb.appendBuffer(mp3Data);
+						// Re-append when buffer runs low to keep the stream alive
+						el.addEventListener('timeupdate', () => {
+							if (ms.readyState !== 'open' || sb.updating) return;
+							const buf = sb.buffered;
+							if (buf.length === 0) return;
+							const remaining = buf.end(buf.length - 1) - el.currentTime;
+							if (remaining < 10) {
+								sb.timestampOffset = buf.end(buf.length - 1);
+								sb.appendBuffer(mp3Data);
+							}
+							// Trim old data to prevent unbounded memory growth
+							if (el.currentTime > 60 && !sb.updating) {
+								sb.remove(0, el.currentTime - 30);
+							}
+						});
+					})
+					.catch(() => {});
+			});
+		} else {
+			// Fallback for browsers without MSE (e.g. iOS Safari): plain MP3 loop
+			el.src = '/30-seconds-of-silence.mp3';
+			el.loop = true;
+		}
+		return el;
 	},
 };
