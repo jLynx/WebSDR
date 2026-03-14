@@ -90,45 +90,56 @@ export class WebRTCHandler {
 		}
 
 		return new Promise<string>((resolve, reject) => {
-			const peerOpts = peerConfig ? { config: peerConfig } : {};
-			if (this.isHost) {
-				// Host generates a random alphabet id
-				const id = 'browsdr-' + Math.random().toString(36).substring(2, 8);
-				this.peer = new window.Peer(id, peerOpts);
-			} else {
-				// Client generates random id, will connect to this.remoteId
-				this.peer = new window.Peer(undefined, peerOpts);
-			}
-
-			this.peer.on('open', (id: string) => {
-				console.log('[WebRTC] Peer ID:', id);
-
+			const connectWithRetry = (retries: number) => {
+				const peerOpts = peerConfig ? { config: peerConfig } : {};
 				if (this.isHost) {
-					this._setStatus({ status: 'ready', id: id });
+					// Host generates a random 8-character id like "x4ja9d2z"
+					const id = Math.random().toString(36).substring(2, 10);
+					this.peer = new window.Peer(id, peerOpts);
 				} else {
-					this._setStatus({ status: 'connecting' });
-					if (this.remoteId) {
-						this._connectToHost();
+					// Client generates random id, will connect to this.remoteId
+					this.peer = new window.Peer(undefined, peerOpts);
+				}
+
+				this.peer.on('open', (id: string) => {
+					console.log('[WebRTC] Peer ID:', id);
+
+					if (this.isHost) {
+						this._setStatus({ status: 'ready', id: id });
+					} else {
+						this._setStatus({ status: 'connecting' });
+						if (this.remoteId) {
+							this._connectToHost();
+						}
 					}
-				}
-				resolve(id);
-			});
+					resolve(id);
+				});
 
-			this.peer.on('connection', (conn: any) => {
-				if (this.isHost) {
-					this._handleIncomingConnection(conn);
-				}
-			});
+				this.peer.on('connection', (conn: any) => {
+					if (this.isHost) {
+						this._handleIncomingConnection(conn);
+					}
+				});
 
-			this.peer.on('error', (err: any) => {
-				console.error('[WebRTC] PeerJS error:', err);
-				this._setStatus({ status: 'error', error: err.type });
-				reject(err);
-			});
+				this.peer.on('error', (err: any) => {
+					if (this.isHost && err.type === 'unavailable-id' && retries > 0) {
+						console.warn('[WebRTC] Generated ID was taken, retrying...');
+						this.peer.destroy();
+						connectWithRetry(retries - 1);
+						return;
+					}
 
-			this.peer.on('disconnected', () => {
-				this._setStatus({ status: 'disconnected' });
-			});
+					console.error('[WebRTC] PeerJS error:', err);
+					this._setStatus({ status: 'error', error: err.type });
+					reject(err);
+				});
+
+				this.peer.on('disconnected', () => {
+					this._setStatus({ status: 'disconnected' });
+				});
+			};
+
+			connectWithRetry(3);
 		});
 	}
 
