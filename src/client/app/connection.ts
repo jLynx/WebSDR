@@ -156,6 +156,12 @@ export const connectionMethods = {
 			this.running = false;
 			if (this._statsTimer) { clearInterval(this._statsTimer); this._statsTimer = null; }
 			this.dspStats = null;
+			if (this._mediaAudioEl) {
+				this._mediaAudioEl.pause();
+				this._mediaAudioEl.srcObject = null;
+				this._mediaAudioEl.remove();
+				this._mediaAudioEl = null;
+			}
 			if (this.audioCtx) {
 				try { await this.audioCtx.close(); } catch (_: any) { }
 				this.audioCtx = null;

@@ -130,13 +130,32 @@ export const uiHelperMethods = {
 			this.audioCtx = new AudioContext({ sampleRate: 48000 });
 			this.gainNode = this.audioCtx.createGain();
 			this.gainNode.gain.value = 1.0;
-			this.gainNode.connect(this.audioCtx.destination);
+
+			// Route audio through a hidden <audio> element backed by a MediaStream.
+			// This makes the OS treat the tab as a real media app so it:
+			//   1. Shows media playback controls in the notification shade
+			//   2. Keeps the browser process (and WebRTC connection) alive when the screen locks
+			// Browsers without MediaStreamDestination fall back to the direct destination.
+			if (typeof this.audioCtx.createMediaStreamDestination === 'function') {
+				const mediaDest = this.audioCtx.createMediaStreamDestination();
+				this.gainNode.connect(mediaDest);
+				const audio = document.createElement('audio');
+				audio.srcObject = mediaDest.stream;
+				audio.style.cssText = 'position:absolute;width:0;height:0;';
+				document.body.appendChild(audio);
+				audio.play().catch(() => {});
+				this._mediaAudioEl = audio;
+			} else {
+				this.gainNode.connect(this.audioCtx.destination);
+			}
+
 			this.nextPlayTime = 0;
 			this.audioRingBuf = new Float32Array(4800);
 			this.audioRingPos = 0;
 		}
 		if (this.audioCtx.state === 'suspended') {
 			this.audioCtx.resume().catch((e: any) => console.warn('AudioContext resume blocked:', e));
+			if (this._mediaAudioEl) this._mediaAudioEl.play().catch(() => {});
 		}
 	},
 };
