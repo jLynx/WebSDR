@@ -441,8 +441,8 @@ export function mountCanvas(this: AppInstance) {
 	const urlParams = new URLSearchParams(window.location.search);
 	const connectId = urlParams.get('connect');
 	if (connectId) {
-		// Start connecting immediately in the background.
-		setTimeout(() => this.connectRemoteClient(connectId), 500);
+		// Use connectToRemoteId to also add to recents
+		setTimeout(() => this.connectToRemoteId(connectId), 500);
 		// Show overlay so the user provides a click gesture to unlock AudioContext.
 		this.audioUnlockPendingId = connectId;
 	}

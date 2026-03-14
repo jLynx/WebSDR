@@ -11,6 +11,7 @@ export const settingsMethods = {
 			vfos: this.vfos,
 			view: this.view,
 			collapsedPanels: this.collapsedPanels,
+			recentRemoteIds: this.recentRemoteIds,
 		};
 		localStorage.setItem("SDRSetting", JSON.stringify(obj));
 	},
@@ -45,6 +46,7 @@ export const settingsMethods = {
 				else if (setting.activeVfo) this.activeVfoIndex = setting.activeVfo - 1;
 				if (setting.view) Object.assign(this.view, setting.view);
 				if (setting.collapsedPanels && typeof setting.collapsedPanels === 'object') Object.assign(this.collapsedPanels, setting.collapsedPanels);
+				if (setting.recentRemoteIds && Array.isArray(setting.recentRemoteIds)) this.recentRemoteIds = setting.recentRemoteIds;
 			}
 		} catch (e) { }
 	},

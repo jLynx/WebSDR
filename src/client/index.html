@@ -103,6 +103,7 @@
 						<div class="form-row" style="flex-direction: column; gap: 8px;">
 							<template v-if="!connected && remoteMode !== 'client'">
 								<button class="btn btn-primary" style="width: 100%;" @click="connect">Connect Device</button>
+								<button class="btn btn-secondary" style="width: 100%;" @click="showRemoteConnectDialog = true">Connect Remote</button>
 								<button class="btn btn-secondary" style="width: 100%;" v-if="isLocal" @click="connectMock">Connect Mock SDR</button>
 							</template>
 							<button class="btn" style="width: 100%;" v-else @click="disconnect">{{ remoteMode === 'client' ? 'Disconnect Remote' : 'Disconnect' }}</button>
@@ -850,6 +851,31 @@
 				<svg viewBox="0 0 24 24" width="48" height="48"><path fill="currentColor" d="M3 9v6h4l5 5V4L7 9H3zm13.5 3c0-1.77-1.02-3.29-2.5-4.03v8.05c1.48-.73 2.5-2.25 2.5-4.02zM14 3.23v2.06c2.89.86 5 3.54 5 6.71s-2.11 5.85-5 6.71v2.06c4.01-.91 7-4.49 7-8.77s-2.99-7.86-7-8.77z"/></svg>
 				<div class="audio-unlock-title">Click to Enable Audio</div>
 				<div class="audio-unlock-sub">Connecting in background&hellip;</div>
+			</div>
+		</div>
+
+		<!-- Remote connect dialog -->
+		<div v-if="showRemoteConnectDialog" class="bookmark-overlay" @click.self="showRemoteConnectDialog = false">
+			<div class="bookmark-dialog">
+				<div class="bookmark-dialog-title">Connect to Remote SDR</div>
+				<div class="bookmark-dialog-body">
+					<div class="bm-edit-row" style="margin-bottom: 16px;">
+						<input type="text" v-model="remoteConnectId" class="bookmark-dialog-input" @keyup.enter="connectToRemoteId(remoteConnectId)" @keyup.esc="showRemoteConnectDialog = false" placeholder="Enter remote share code or link">
+					</div>
+					<div v-if="recentRemoteIds.length > 0" class="recent-remotes">
+						<div class="bm-edit-section-label" style="margin-bottom: 8px;">Recent Connections</div>
+						<div class="recent-remotes-list" style="display: flex; flex-direction: column; gap: 6px;">
+							<div v-for="id in recentRemoteIds" :key="id" class="recent-remote-item" @click="connectToRemoteId(id)">
+								<span class="recent-remote-id" :title="id">{{ id }}</span>
+								<button class="bookmark-btn bookmark-delete" style="flex-shrink: 0;" @click.stop="removeRecentRemoteId(id)" title="Remove">&times;</button>
+							</div>
+						</div>
+					</div>
+				</div>
+				<div class="bookmark-dialog-footer">
+					<button class="btn" @click="showRemoteConnectDialog = false">Cancel</button>
+					<button class="btn btn-primary" @click="connectToRemoteId(remoteConnectId)" :disabled="!remoteConnectId.trim()">Connect</button>
+				</div>
 			</div>
 		</div>
 

@@ -115,7 +115,11 @@ export const remoteMethods = {
 		this.remoteStatus = 'Connecting...';
 		this.showMsg("Connecting to remote host...");
 
+		// If this is a valid ID (it connected), it will be added to recents here or earlier.
+		// Handled via the UI (connectToRemoteId method).
+
 		this._webrtc = new WebRTCHandler(false, hostId);
+
 		this._webrtc.onStatusChange = (status: any) => {
 			if (status.status === 'connecting') {
 				this.remoteStatus = 'Connecting...';
@@ -124,6 +128,15 @@ export const remoteMethods = {
 				this.connected = true;
 				this.info.boardName = "Remote SDR";
 				this.showMsg("Connected to remote host.");
+				
+				// Update recent ids list (keep last 5)
+				this.recentRemoteIds = this.recentRemoteIds.filter((x: string) => x !== hostId);
+				this.recentRemoteIds.unshift(hostId);
+				if (this.recentRemoteIds.length > 5) {
+					this.recentRemoteIds = this.recentRemoteIds.slice(0, 5);
+				}
+				this.saveSetting();
+
 				// Send country info to host
 				fetch('/api/geo').then((r: Response) => r.json()).then((data: any) => {
 					if (this._webrtc) this._webrtc.sendCommand({ type: 'clientInfo', country: data.country || 'XX' });
@@ -190,6 +203,18 @@ export const remoteMethods = {
 		} catch(e: any) {
 			this.showMsg("Failed to initialize remote client.");
 		}
+	},
+	async connectToRemoteId(this: AppInstance, id: string) {
+		const cleanId = id.replace(/https?:\/\/.*?\/\?connect=/, '').trim();
+		if (!cleanId) return;
+
+		this.showRemoteConnectDialog = false;
+		
+		await this.connectRemoteClient(cleanId);
+	},
+	removeRecentRemoteId(this: AppInstance, id: string) {
+		this.recentRemoteIds = this.recentRemoteIds.filter((x: string) => x !== id);
+		this.saveSetting();
 	},
 	handleRemoteCommand(this: AppInstance, clientIdOrCmd: any, cmdOrUndefined?: any) {
 		// Support both (clientId, cmd) from host and (cmd) from client
