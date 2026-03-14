@@ -158,7 +158,12 @@ export const connectionMethods = {
 			this.dspStats = null;
 			if (this._mediaAudioEl) {
 				this._mediaAudioEl.pause();
-				this._mediaAudioEl.srcObject = null;
+				if (this._mediaSource && this._mediaSource.readyState === 'open') {
+					try { this._mediaSource.endOfStream(); } catch (_) {}
+				}
+				this._mediaSource = null;
+				this._silentMp3Data = null;
+				this._mediaAudioEl.src = '';
 				this._mediaAudioEl.remove();
 				this._mediaAudioEl = null;
 			}
@@ -258,7 +263,7 @@ export const connectionMethods = {
 
 		await this._acquireWakeLock();
 		if ('mediaSession' in navigator) {
-			navigator.mediaSession.metadata = new MediaMetadata({ title: 'WebSDR', artist: 'Receiving' });
+			navigator.mediaSession.metadata = new MediaMetadata({ title: 'BrowSDR', artist: 'Receiving' });
 			navigator.mediaSession.playbackState = 'playing';
 			// Action handlers are REQUIRED for Chrome on Android to show the media notification.
 			// Without at least play+pause registered, the notification never appears.

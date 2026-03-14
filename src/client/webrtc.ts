@@ -22,6 +22,9 @@ type ChunkCallback = (data: ArrayBuffer) => void;
 
 declare const window: Window & { Peer: any };
 
+/** Prefix prepended to all PeerJS IDs (hidden from users / share links). */
+export const PEER_ID_PREFIX = 'browsdr-';
+
 export class WebRTCHandler {
 	isHost: boolean;
 	peer: any;
@@ -38,13 +41,14 @@ export class WebRTCHandler {
 	connAudioOverflow: boolean;
 
 	remoteId: string | null; // Used by client to connect to host
+	preferredHostId: string | null; // Used by host to reuse a previous share code
 
 	onStatusChange: StatusChangeCallback | null;
 	onCommand: CommandCallbackHost | CommandCallbackClient | null;
 	onFftChunk: ChunkCallback | null;
 	onAudioChunk: ChunkCallback | null;
 
-	constructor(isHost: boolean, remoteId: string | null = null) {
+	constructor(isHost: boolean, remoteId: string | null = null, preferredHostId: string | null = null) {
 		this.isHost = isHost;
 		this.peer = null;
 
@@ -59,6 +63,7 @@ export class WebRTCHandler {
 		this.connAudioOverflow = false;
 
 		this.remoteId = remoteId;
+		this.preferredHostId = preferredHostId;
 
 		this.onStatusChange = null;
 		this.onCommand = null;
@@ -93,9 +98,9 @@ export class WebRTCHandler {
 			const connectWithRetry = (retries: number) => {
 				const peerOpts = peerConfig ? { config: peerConfig } : {};
 				if (this.isHost) {
-					// Host generates a random 8-character id like "x4ja9d2z"
-					const id = Math.random().toString(36).substring(2, 10);
-					this.peer = new window.Peer(id, peerOpts);
+					// Reuse preferred ID if available, otherwise generate a new 5-char code
+					const shortId = this.preferredHostId || Math.random().toString(36).substring(2, 7);
+					this.peer = new window.Peer(PEER_ID_PREFIX + shortId, peerOpts);
 				} else {
 					// Client generates random id, will connect to this.remoteId
 					this.peer = new window.Peer(undefined, peerOpts);
@@ -123,7 +128,8 @@ export class WebRTCHandler {
 
 				this.peer.on('error', (err: any) => {
 					if (this.isHost && err.type === 'unavailable-id' && retries > 0) {
-						console.warn('[WebRTC] Generated ID was taken, retrying...');
+						console.warn('[WebRTC] Generated ID was taken, retrying with new ID...');
+						this.preferredHostId = null; // Don't reuse the taken ID
 						this.peer.destroy();
 						connectWithRetry(retries - 1);
 						return;

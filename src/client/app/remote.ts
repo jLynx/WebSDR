@@ -1,6 +1,6 @@
 import type { AppInstance } from './types';
 import * as Comlink from 'comlink';
-import { WebRTCHandler } from '../webrtc';
+import { WebRTCHandler, PEER_ID_PREFIX } from '../webrtc';
 
 export const remoteMethods = {
 	async startRemoteHost(this: AppInstance) {
@@ -23,14 +23,17 @@ export const remoteMethods = {
 		this.remoteStatus = 'Generating ID...';
 
 		console.log("[WebRTC] Instantiating WebRTCHandler");
-		this._webrtc = new WebRTCHandler(true); // isHost = true
+		const savedCode = localStorage.getItem('browsdr-share-code');
+		this._webrtc = new WebRTCHandler(true, null, savedCode); // isHost = true, reuse saved code
 
 		this._webrtc.onStatusChange = (status: any) => {
 			console.log("[WebRTC] Host status changed:", status);
 			if (status.status === 'ready') {
 				this.remoteStatus = 'Waiting for connection';
 				const origin = window.location.origin;
-				this.remoteLink = `${origin}/?connect=${status.id}`;
+				const shortId = status.id.replace(PEER_ID_PREFIX, '');
+				localStorage.setItem('browsdr-share-code', shortId);
+				this.remoteLink = `${origin}/?connect=${shortId}`;
 				console.log("[WebRTC] Link completely generated:", this.remoteLink);
 			} else if (status.status === 'client-connected') {
 				const clientId = status.clientId;
@@ -118,7 +121,7 @@ export const remoteMethods = {
 		// If this is a valid ID (it connected), it will be added to recents here or earlier.
 		// Handled via the UI (connectToRemoteId method).
 
-		this._webrtc = new WebRTCHandler(false, hostId);
+		this._webrtc = new WebRTCHandler(false, PEER_ID_PREFIX + hostId);
 
 		this._webrtc.onStatusChange = (status: any) => {
 			if (status.status === 'connecting') {
@@ -203,6 +206,16 @@ export const remoteMethods = {
 		} catch(e: any) {
 			this.showMsg("Failed to initialize remote client.");
 		}
+	},
+	async regenerateShareCode(this: AppInstance) {
+		if (this.remoteMode !== 'host' || !this._webrtc) return;
+		// Tear down current host session and restart with a fresh code
+		localStorage.removeItem('browsdr-share-code');
+		this._webrtc.close();
+		this._webrtc = null;
+		this.remoteLink = '';
+		this.remoteClients = [];
+		await this.startRemoteHost();
 	},
 	async connectToRemoteId(this: AppInstance, id: string) {
 		const cleanId = id.replace(/https?:\/\/.*?\/\?connect=/, '').trim();
