@@ -239,6 +239,16 @@ export class WebRTCHandler {
 		this._setupHostListeners(conn, conn.label, clientId);
 	}
 
+	_cleanupClient(clientId: string): void {
+		const client = this.clients.get(clientId);
+		if (!client) return;
+		this.clients.delete(clientId);
+		if (client.cmd) try { client.cmd.close(); } catch (_) {}
+		if (client.fft) try { client.fft.close(); } catch (_) {}
+		if (client.audio) try { client.audio.close(); } catch (_) {}
+		this._setStatus({ status: 'client-disconnected', clientId });
+	}
+
 	_setupHostListeners(conn: any, type: string, clientId: string): void {
 		conn.on('open', () => {
 			const client = this.clients.get(clientId);
@@ -247,6 +257,21 @@ export class WebRTCHandler {
 				this._checkRelayType(client.cmd, clientId).then((isRelay: boolean | null) => {
 					this._setStatus({ status: 'client-connected', clientId, isRelay: !!isRelay });
 				});
+
+				// Monitor ICE connection state to detect abrupt disconnects (e.g. tab close).
+				// PeerJS 'close' events on DataChannels are not reliably fired when a
+				// remote peer disappears without a graceful shutdown.
+				const pc: RTCPeerConnection | undefined = client.cmd.peerConnection;
+				if (pc) {
+					pc.addEventListener('iceconnectionstatechange', () => {
+						if (pc.iceConnectionState === 'disconnected' || pc.iceConnectionState === 'failed' || pc.iceConnectionState === 'closed') {
+							if (this.clients.has(clientId)) {
+								console.log(`[WebRTC] ICE state "${pc.iceConnectionState}" for ${clientId.substring(0, 8)}, cleaning up`);
+								this._cleanupClient(clientId);
+							}
+						}
+					});
+				}
 			}
 		});
 
@@ -262,12 +287,8 @@ export class WebRTCHandler {
 		});
 
 		conn.on('close', () => {
-			const client = this.clients.get(clientId);
-			if (!client) return;
-			// Only fire disconnected once when any channel drops
-			if (client.cmd && client.fft && client.audio) {
-				this.clients.delete(clientId);
-				this._setStatus({ status: 'client-disconnected', clientId });
+			if (this.clients.has(clientId)) {
+				this._cleanupClient(clientId);
 			}
 		});
 	}
@@ -391,12 +412,7 @@ export class WebRTCHandler {
 	// -- Client management (host) --
 
 	kickClient(clientId: string): void {
-		const client = this.clients.get(clientId);
-		if (!client) return;
-		if (client.cmd) try { client.cmd.close(); } catch (_) {}
-		if (client.fft) try { client.fft.close(); } catch (_) {}
-		if (client.audio) try { client.audio.close(); } catch (_) {}
-		this.clients.delete(clientId);
+		this._cleanupClient(clientId);
 	}
 
 	getConnectedClientIds(): string[] {
