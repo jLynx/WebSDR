@@ -263,7 +263,15 @@ export const connectionMethods = {
 
 		await this._acquireWakeLock();
 		if ('mediaSession' in navigator) {
-			navigator.mediaSession.metadata = new MediaMetadata({ title: 'BrowSDR', artist: 'Receiving' });
+			navigator.mediaSession.metadata = new MediaMetadata({
+				title: 'BrowSDR',
+				artist: 'Receiving',
+				artwork: [
+					{ src: '/icon-96.png', sizes: '96x96', type: 'image/png' },
+					{ src: '/icon-192.png', sizes: '192x192', type: 'image/png' },
+					{ src: '/icon-512.png', sizes: '512x512', type: 'image/png' },
+				],
+			});
 			navigator.mediaSession.playbackState = 'playing';
 			// Action handlers are REQUIRED for Chrome on Android to show the media notification.
 			// Without at least play+pause registered, the notification never appears.
