@@ -179,21 +179,6 @@ export class RDSDecoder {
 	private prevSymI: number = 0;
 	private prevSymQ: number = 0;
 
-	// Debug stats (logged every 5 seconds)
-	private dbgLastLog: number = 0;
-	private dbgBitsTotal: number = 0;
-	private dbgBlocksTotal: number = 0;
-	private dbgBlocksValid: number = 0;
-	private dbgGroupsDecoded: number = 0;
-	private dbgSyncLost: number = 0;
-	private dbgBitMagSum: number = 0;    // sum of |filtI| at bit boundaries
-	private dbgBitDiffSum: number = 0;   // sum of |diffProd| at bit boundaries
-	private dbgBitSamples: number = 0;
-	private dbgPilotIsum: number = 0;    // sum of |pilotLpfI|
-	private dbgPilotQsum: number = 0;    // sum of |pilotLpfQ|
-	private dbgPilotIQcount: number = 0;
-	private dbgClockCorr: number = 0;    // clock correction events
-
 	// Block assembly
 	private shiftReg: number = 0;
 	private bitCount: number = 0;
@@ -254,11 +239,6 @@ export class RDSDecoder {
 				this.pilotPhase -= (this.pilotMixI * this.pilotMixQ) / pp * this.pilotAlpha;
 			}
 
-			// Debug: track pilot lock quality
-			this.dbgPilotIsum += Math.abs(this.pilotMixI);
-			this.dbgPilotQsum += Math.abs(this.pilotMixQ);
-			this.dbgPilotIQcount++;
-
 			this.pilotPhase += this.pilotFreq;
 			if (this.pilotPhase > 2 * Math.PI) this.pilotPhase -= 2 * Math.PI;
 			else if (this.pilotPhase < 0) this.pilotPhase += 2 * Math.PI;
@@ -283,7 +263,6 @@ export class RDSDecoder {
 			if ((filtI > 0) !== (this.prevBpskI > 0)) {
 				const error = this.clockPhase - this.samplesPerBit / 2;
 				this.clockPhase -= error * 0.1;
-				this.dbgClockCorr++;
 			}
 			this.prevBpskI = filtI;
 
@@ -295,10 +274,6 @@ export class RDSDecoder {
 				const diffProd = filtI * this.prevSymI + filtQ * this.prevSymQ;
 				const decodedBit = diffProd < 0 ? 1 : 0;
 
-				this.dbgBitMagSum += Math.abs(filtI);
-				this.dbgBitDiffSum += Math.abs(diffProd);
-				this.dbgBitSamples++;
-
 				this.prevSymI = filtI;
 				this.prevSymQ = filtQ;
 
@@ -308,33 +283,6 @@ export class RDSDecoder {
 	}
 
 	private processBit(bit: number): void {
-		this.dbgBitsTotal++;
-
-		// Periodic debug log every 5 seconds
-		const now = performance.now();
-		if (now - this.dbgLastLog > 5000) {
-			const blockRate = this.dbgBlocksTotal > 0 ? (this.dbgBlocksValid / this.dbgBlocksTotal * 100).toFixed(1) : '0';
-			const avgBitMag = this.dbgBitSamples > 0 ? (this.dbgBitMagSum / this.dbgBitSamples) : 0;
-			const avgDiffProd = this.dbgBitSamples > 0 ? (this.dbgBitDiffSum / this.dbgBitSamples) : 0;
-			const avgPI = this.dbgPilotIQcount > 0 ? (this.dbgPilotIsum / this.dbgPilotIQcount) : 0;
-			const avgPQ = this.dbgPilotIQcount > 0 ? (this.dbgPilotQsum / this.dbgPilotIQcount) : 0;
-			const qiRatio = avgPI > 1e-12 ? (avgPQ / avgPI * 100).toFixed(1) : '?';
-			console.log(`[RDS] blk=${this.dbgBlocksValid}/${this.dbgBlocksTotal}(${blockRate}%) pllI=${avgPI.toExponential(2)} Q/I=${qiRatio}% |I|=${avgBitMag.toExponential(2)} |diff|=${avgDiffProd.toExponential(2)} clk=${this.dbgClockCorr}`);
-			this.dbgBitsTotal = 0;
-			this.dbgBlocksTotal = 0;
-			this.dbgBlocksValid = 0;
-			this.dbgGroupsDecoded = 0;
-			this.dbgSyncLost = 0;
-			this.dbgBitMagSum = 0;
-			this.dbgBitDiffSum = 0;
-			this.dbgBitSamples = 0;
-			this.dbgPilotIsum = 0;
-			this.dbgPilotQsum = 0;
-			this.dbgPilotIQcount = 0;
-			this.dbgClockCorr = 0;
-			this.dbgLastLog = now;
-		}
-
 		// Shift bit into 26-bit register
 		this.shiftReg = ((this.shiftReg << 1) | bit) & 0x3FFFFFF;
 		this.bitCount++;
@@ -383,20 +331,17 @@ export class RDSDecoder {
 		const isValid = (syn === expectedSyn) ||
 			(this.blockIndex === 2 && syn === SYNDROME_CP);
 
-		this.dbgBlocksTotal++;
 		if (isValid) {
 			this.blocks[this.blockIndex] = (this.shiftReg >> 10) & 0xFFFF;
 			this.blockValid[this.blockIndex] = true;
 			this.goodBlocks++;
 			this.blockErrors = 0;
-			this.dbgBlocksValid++;
 		} else {
 			this.blockValid[this.blockIndex] = false;
 			this.blockErrors++;
 			if (this.blockErrors > 30) {
 				// Lost sync
 				this.synced = false;
-				this.dbgSyncLost++;
 				this.goodBlocks = 0;
 				this.blockErrors = 0;
 				return;
@@ -423,7 +368,6 @@ export class RDSDecoder {
 	}
 
 	private decodeGroup(): void {
-		this.dbgGroupsDecoded++;
 		const bv = this.blockValid;
 
 		// Block A: PI code — only if block A passed CRC
