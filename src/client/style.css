@@ -1144,33 +1144,72 @@ canvas {
 }
 
 /* ────── RDS ────── */
-.rds-station {
+.rds-split {
 	display: flex;
-	align-items: center;
-	gap: 12px;
-	padding: 8px 12px;
-	background: #1a1a2e;
+	flex: 1;
+	min-height: 0;
+	border-top: 1px solid var(--border);
+}
+
+.rds-stations-col {
+	width: 40%;
+	min-width: 200px;
+	overflow-y: auto;
+	border-right: 1px solid var(--border);
+}
+
+.rds-log-col {
+	flex: 1;
+	overflow-y: auto;
+	padding: 6px 12px;
+	font-family: 'Roboto Mono', monospace;
+	font-size: 11px;
+}
+
+.rds-station-card {
+	border-left: 3px solid #666;
 	border-bottom: 1px solid var(--border);
+	padding: 6px 10px;
+	background: #1a1a2e;
 	font-family: 'Roboto Mono', monospace;
 }
 
+.rds-station {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 8px;
+}
+
+.rds-station-meta {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	margin-top: 2px;
+}
+
 .rds-ps {
-	font-size: 18px;
+	font-size: 15px;
 	font-weight: 700;
 	color: #4fc3f7;
-	letter-spacing: 2px;
+	letter-spacing: 1px;
+}
+
+.rds-freq {
+	font-size: 11px;
+	color: #aaa;
 }
 
 .rds-pi {
-	font-size: 11px;
+	font-size: 10px;
 	color: #80cbc4;
 }
 
 .rds-pty {
-	font-size: 11px;
+	font-size: 10px;
 	color: #ce93d8;
 	background: #4a148c;
-	padding: 1px 6px;
+	padding: 1px 5px;
 	border-radius: 3px;
 }
 
@@ -1195,15 +1234,13 @@ canvas {
 }
 
 .rds-rt {
-	padding: 6px 12px;
-	background: #111;
-	border-bottom: 1px solid var(--border);
-	font-family: 'Roboto Mono', monospace;
-	font-size: 12px;
+	margin-top: 3px;
+	font-size: 11px;
 	color: #e0e0e0;
 	letter-spacing: 0.5px;
 	white-space: pre-wrap;
 	word-break: break-word;
+	opacity: 0.85;
 }
 
 /* ────── Bookmarks ────── */
