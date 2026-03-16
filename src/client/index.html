@@ -95,6 +95,7 @@
 			<div class="sidebar-backdrop" v-if="sidebarOpen" @click="closeSidebar"></div>
 			<!-- Sidebar -->
 			<div class="sidebar" :class="{ 'sidebar-open': sidebarOpen }">
+				<div class="sidebar-scroll">
 				<div class="panel">
 					<div class="panel-header panel-header-collapsible" @click="togglePanel('source')">
 						<span>Source</span>
@@ -408,6 +409,14 @@
 						</template>
 					</div>
 				</div>
+				</div>
+			<!-- Sidebar Footer -->
+			<div class="sidebar-footer">
+				<button class="icon-btn sidebar-about-btn" @click="showAbout = true" title="About BrowSDR">
+					<svg viewBox="0 0 24 24" width="20" height="20"><path fill="currentColor" d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm1 15h-2v-6h2v6zm0-8h-2V7h2v2z"/></svg>
+					<span>About</span>
+				</button>
+			</div>
 			</div>
 
 			<!-- Canvas Area -->
@@ -888,6 +897,136 @@
 				<div class="bookmark-dialog-footer">
 					<button class="btn" @click="showRemoteConnectDialog = false">Cancel</button>
 					<button class="btn btn-primary" @click="connectToRemoteId(remoteConnectId)" :disabled="!remoteConnectId.trim()">Connect</button>
+				</div>
+			</div>
+		</div>
+
+		<!-- About / Features dialog -->
+		<div v-if="showAbout" class="bookmark-overlay" @click.self="showAbout = false">
+			<div class="bookmark-dialog about-dialog">
+				<div class="bookmark-dialog-title about-dialog-title">
+					<span class="about-logo">BrowSDR</span>
+					<span class="about-tagline">Browser-based Software Defined Radio</span>
+				</div>
+				<div class="bookmark-dialog-body about-dialog-body">
+					<p class="about-intro">
+						A blazing-fast, zero-install SDR receiver that runs entirely in your browser.
+						Connect a USB SDR device or join a shared remote session and start listening instantly.
+					</p>
+
+					<div class="about-features-grid">
+
+						<div class="about-feature-card">
+							<div class="about-feature-icon">
+								<svg viewBox="0 0 24 24" width="20" height="20"><path fill="currentColor" d="M15 5H9v6H3v8h18v-8h-6V5zm-2 12H7v-4h6v4zm8 0h-6v-4h6v4zm-4-8V7h-2v2h2z"/></svg>
+							</div>
+							<div class="about-feature-content">
+								<div class="about-feature-title">WebUSB — Zero Install</div>
+								<div class="about-feature-desc">Connects directly to HackRF and RTL-SDR hardware via WebUSB. No drivers, no software, no plugins — just open the browser and go.</div>
+							</div>
+						</div>
+
+						<div class="about-feature-card">
+							<div class="about-feature-icon">
+								<svg viewBox="0 0 24 24" width="20" height="20"><path fill="currentColor" d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-1 14H9V8h2v8zm4 0h-2V8h2v8z"/></svg>
+							</div>
+							<div class="about-feature-content">
+								<div class="about-feature-title">Multi-VFO Reception</div>
+								<div class="about-feature-desc">Listen to multiple frequencies simultaneously, each with its own color, mode, squelch, volume, and audio filters.</div>
+							</div>
+						</div>
+
+						<div class="about-feature-card">
+							<div class="about-feature-icon">
+								<svg viewBox="0 0 24 24" width="20" height="20"><path fill="currentColor" d="M16 11c1.66 0 2.99-1.34 2.99-3S17.66 5 16 5c-1.66 0-3 1.34-3 3s1.34 3 3 3zm-8 0c1.66 0 2.99-1.34 2.99-3S9.66 5 8 5C6.34 5 5 6.34 5 8s1.34 3 3 3zm0 2c-2.33 0-7 1.17-7 3.5V19h14v-2.5c0-2.33-4.67-3.5-7-3.5zm8 0c-.29 0-.62.02-.97.05 1.16.84 1.97 1.97 1.97 3.45V19h6v-2.5c0-2.33-4.67-3.5-7-3.5z"/></svg>
+							</div>
+							<div class="about-feature-content">
+								<div class="about-feature-title">Remote SDR Sharing</div>
+								<div class="about-feature-desc">Share your SDR with remote listeners via WebRTC. Clients connect with a share link. Host can lock settings and manage connected clients.</div>
+							</div>
+						</div>
+
+						<div class="about-feature-card">
+							<div class="about-feature-icon">
+								<svg viewBox="0 0 24 24" width="20" height="20"><path fill="currentColor" d="M12 15c1.66 0 3-1.34 3-3V6c0-1.66-1.34-3-3-3S9 4.34 9 6v6c0 1.66 1.34 3 3 3zm-1-9c0-.55.45-1 1-1s1 .45 1 1v6c0 .55-.45 1-1 1s-1-.45-1-1V6zm6 6c0 2.76-2.24 5-5 5s-5-2.24-5-5H5c0 3.53 2.61 6.43 6 6.92V21h2v-2.08c3.39-.49 6-3.39 6-6.92h-2z"/></svg>
+							</div>
+							<div class="about-feature-content">
+								<div class="about-feature-title">Whisper AI Transcription</div>
+								<div class="about-feature-desc">Live speech-to-text using OpenAI Whisper running locally in your browser. Supports English-only and multilingual models up to 800 MB.</div>
+							</div>
+						</div>
+
+						<div class="about-feature-card">
+							<div class="about-feature-icon">
+								<svg viewBox="0 0 24 24" width="20" height="20"><path fill="currentColor" d="M3.5 18.49l6-6.01 4 4L22 6.92l-1.41-1.41-7.09 7.97-4-4L2 16.99l1.5 1.5z"/></svg>
+							</div>
+							<div class="about-feature-content">
+								<div class="about-feature-title">Frequency Activity Tracker</div>
+								<div class="about-feature-desc">Automatically tracks squelch-open time and transmission count per VFO. Ranks active frequencies and shows live transmission indicators.</div>
+							</div>
+						</div>
+
+						<div class="about-feature-card">
+							<div class="about-feature-icon">
+								<svg viewBox="0 0 24 24" width="20" height="20"><path fill="currentColor" d="M20 2H4c-1.1 0-2 .9-2 2v18l4-4h14c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2zm-3 12H7v-2h10v2zm0-3H7V9h10v2zm0-3H7V6h10v2z"/></svg>
+							</div>
+							<div class="about-feature-content">
+								<div class="about-feature-title">POCSAG Pager Decoder</div>
+								<div class="about-feature-desc">Real-time POCSAG pager decoding on any NFM VFO. Displays capcode, message type, baud rate, and message text with export support.</div>
+							</div>
+						</div>
+
+						<div class="about-feature-card">
+							<div class="about-feature-icon">
+								<svg viewBox="0 0 24 24" width="20" height="20"><path fill="currentColor" d="M3 9v6h4l5 5V4L7 9H3zm13.5 3c0-1.77-1.02-3.29-2.5-4.03v8.05c1.48-.73 2.5-2.25 2.5-4.02zM14 3.23v2.06c2.89.86 5 3.54 5 6.71s-2.11 5.85-5 6.71v2.06c4.01-.91 7-4.49 7-8.77s-2.99-7.86-7-8.77z"/></svg>
+							</div>
+							<div class="about-feature-content">
+								<div class="about-feature-title">Demodulation Modes</div>
+								<div class="about-feature-desc">NFM, WFM (with stereo & RDS), AM, USB, LSB, DSB, CW, and RAW — all decoded in real-time via WebAssembly DSP.</div>
+							</div>
+						</div>
+
+						<div class="about-feature-card">
+							<div class="about-feature-icon">
+								<svg viewBox="0 0 24 24" width="20" height="20"><path fill="currentColor" d="M19 3H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zM9 17H7v-7h2v7zm4 0h-2V7h2v10zm4 0h-2v-4h2v4z"/></svg>
+							</div>
+							<div class="about-feature-content">
+								<div class="about-feature-title">Waterfall & Spectrum</div>
+								<div class="about-feature-desc">Real-time FFT spectrum and scrolling waterfall with adjustable zoom, pan, and brightness. Hover to read exact frequencies.</div>
+							</div>
+						</div>
+
+						<div class="about-feature-card">
+							<div class="about-feature-icon">
+								<svg viewBox="0 0 24 24" width="20" height="20"><path fill="currentColor" d="M17 12h-5v5h5v-5zM16 1v2H8V1H6v2H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V5a2 2 0 0 0-2-2h-1V1h-2zm3 18H5V8h14v11z"/></svg>
+							</div>
+							<div class="about-feature-content">
+								<div class="about-feature-title">Bookmarks</div>
+								<div class="about-feature-desc">Save individual frequencies or full multi-VFO group presets. Organize by 15+ categories, search, and import/export as JSON.</div>
+							</div>
+						</div>
+
+						<div class="about-feature-card">
+							<div class="about-feature-icon">
+								<svg viewBox="0 0 24 24" width="20" height="20"><path fill="currentColor" d="M15.9 5c-.17 0-.32.09-.41.23l-.07.15-5.18 11.65c-.16.29-.26.61-.26.96 0 1.11.9 2.01 2.01 2.01.96 0 1.77-.68 1.96-1.59l.01-.03L15.85 13h4.15c.55 0 1-.45 1-1s-.45-1-1-1h-4.15l.48-2h3.67c.55 0 1-.45 1-1s-.45-1-1-1H16.3l.79-1.77c.09-.21.14-.43.14-.66 0-.83-.67-1.5-1.5-1.5z"/><path fill="currentColor" d="M9.5 5c-.83 0-1.5.67-1.5 1.5 0 .23.05.45.14.66L8.93 9H5.5a1 1 0 0 0 0 2h3.73l-.48 2H5.5a1 1 0 0 0 0 2h2.96L7.57 18l-.01.03c-.19.91-1 1.59-1.96 1.59-1.11 0-2.01-.9-2.01-2.01 0-.35.1-.67.26-.96L9.03 5.38C8.94 5.24 8.79 5.15 8.63 5h.87z"/></svg>
+							</div>
+							<div class="about-feature-content">
+								<div class="about-feature-title">FM RDS Decoding</div>
+								<div class="about-feature-desc">Decode Radio Data System (RDS) metadata from WFM stations. Supports EU and North America regional settings.</div>
+							</div>
+						</div>
+
+					</div>
+
+					<div class="about-footer-links">
+						<a href="https://github.com/jLynx/BrowSDR" target="_blank" rel="noopener noreferrer" class="about-link">
+							<svg viewBox="0 0 24 24" width="14" height="14" style="vertical-align:middle;margin-right:4px"><path fill="currentColor" d="M12 .3a12 12 0 0 0-3.8 23.38c.6.12.82-.26.82-.58l-.01-2.05c-3.34.73-4.04-1.61-4.04-1.61-.55-1.39-1.34-1.76-1.34-1.76-1.08-.74.08-.73.08-.73 1.2.09 1.84 1.24 1.84 1.24 1.07 1.83 2.8 1.3 3.49 1 .1-.78.42-1.3.76-1.6-2.67-.31-5.47-1.34-5.47-5.93 0-1.31.47-2.38 1.24-3.22-.14-.3-.54-1.52.1-3.18 0 0 1-.32 3.3 1.23a11.5 11.5 0 0 1 6.02 0c2.28-1.55 3.29-1.23 3.29-1.23.64 1.66.24 2.88.12 3.18a4.65 4.65 0 0 1 1.23 3.22c0 4.61-2.8 5.62-5.48 5.92.42.36.81 1.1.81 2.22l-.01 3.29c0 .32.21.7.82.58A12 12 0 0 0 12 .3"/></svg>
+							GitHub
+						</a>
+					</div>
+				</div>
+				<div class="bookmark-dialog-footer">
+					<button class="btn btn-primary" @click="showAbout = false">Got it</button>
 				</div>
 			</div>
 		</div>

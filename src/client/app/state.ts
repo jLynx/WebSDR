@@ -112,6 +112,7 @@ export function createAppData() {
 			devices: [] as Array<{ device: USBDevice; driverName: string; productName: string }>,
 		},
 		sidebarOpen: false,
+		showAbout: false,
 		collapsedPanels: {} as Record<string, boolean>,
 	};
 }
