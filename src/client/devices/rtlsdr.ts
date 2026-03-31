@@ -755,6 +755,11 @@ class FC0012 {
 		await this.com.writeI2CReg(FC0012_I2C_ADDR, 0x0e, 0x80);
 		await this.com.writeI2CReg(FC0012_I2C_ADDR, 0x0e, 0x00);
 
+		// Allow VCO to settle before readback — the PLL needs time to lock
+		// after calibration, especially during rapid frequency changes where
+		// the previous VCO state may still be draining.
+		await new Promise(r => setTimeout(r, 5));
+
 		// VCO re-calibration: read back and adjust if out of range
 		await this.com.writeI2CReg(FC0012_I2C_ADDR, 0x0e, 0x00);
 		try {
@@ -1303,6 +1308,9 @@ class FC0013 {
 		// VCO calibration
 		await this.com.writeI2CReg(FC0013_I2C_ADDR, 0x0e, 0x80);
 		await this.com.writeI2CReg(FC0013_I2C_ADDR, 0x0e, 0x00);
+
+		// Allow VCO to settle before readback
+		await new Promise(r => setTimeout(r, 5));
 		await this.com.writeI2CReg(FC0013_I2C_ADDR, 0x0e, 0x00);
 
 		// VCO re-calibration if out of range
@@ -1868,6 +1876,15 @@ export class RtlSdrDevice implements SdrDevice {
 			try {
 				await this.com.writeReg(BLOCK.USB, REG.EPA_CTL, 0x0210, 2);
 				await this.com.writeReg(BLOCK.USB, REG.EPA_CTL, 0x0000, 2);
+
+				// For zero-IF tuners: re-apply demod reset cycle that setSampleRate
+				// normally does. Without this, the demod's internal state (DC offset
+				// tracking, I/Q balance) can be stale after the EPA flush, causing
+				// the tuner to appear locked to the old frequency.
+				if (!this.hasIfFreq) {
+					await this.com.writeDemodReg(1, 0x01, 0x14, 1);
+					await this.com.writeDemodReg(1, 0x01, 0x10, 1);
+				}
 
 				console.log('RTL-SDR: setFrequency', freqHz);
 				if (this.tunerName.startsWith('FC0012')) {

@@ -58,6 +58,7 @@ createApp({
 		this.backend = await new (Backend as any)();
 		await this.backend.init();
 
+		let freqDebounce: ReturnType<typeof setTimeout> | null = null;
 		this.$watch(() => this.radio.centerFreq, async (newVal: any, oldVal: any) => {
 			this.saveSetting();
 			// Reset zoom on radio change
@@ -72,13 +73,22 @@ createApp({
 				return;
 			}
 
-			if (this.running && this.backend) {
-				this.backend.setFrequency(newVal * 1e6).catch(console.error);
-			}
+			// Debounce: wait for the input to settle before sending USB commands.
+			// Typing "106" fires intermediate values (1, 10, 106) — each triggers a
+			// full pauseRx/VCO-cal/resumeRx cycle that can leave the FC0012 PLL in a
+			// bad state if changes arrive too fast.
+			if (freqDebounce) clearTimeout(freqDebounce);
+			freqDebounce = setTimeout(() => {
+				freqDebounce = null;
 
-			if (this.remoteMode === 'host' && this._webrtc) {
-				this._webrtc.sendCommand({ type: 'sync', radio: this.radio, gains: this.gains, locks: this.locks });
-			}
+				if (this.running && this.backend) {
+					this.backend.setFrequency(newVal * 1e6).catch(console.error);
+				}
+
+				if (this.remoteMode === 'host' && this._webrtc) {
+					this._webrtc.sendCommand({ type: 'sync', radio: this.radio, gains: this.gains, locks: this.locks });
+				}
+			}, 200);
 		});
 
 		this.$watch(() => [this.radio.sampleRate, this.radio.fftSize], async (newVals: any[], oldVals: any[]) => {
