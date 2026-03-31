@@ -24,6 +24,7 @@ export interface GainControl {
 	max: number;
 	step: number;
 	default: number;
+	options?: number[];
 	type: 'slider' | 'checkbox';
 }
 

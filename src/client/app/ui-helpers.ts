@@ -1,23 +1,7 @@
 import type { AppInstance } from './types';
 import { VFO_COLORS } from './constants';
 
-// 29 discrete R820T gain values (tenths of dB) — matches rtlsdr_get_tuner_gains()
-const R82XX_GAINS = [
-	0, 9, 14, 27, 37, 77, 87, 125, 144, 157,
-	166, 197, 207, 229, 254, 280, 297, 328, 338, 364,
-	372, 386, 402, 421, 434, 439, 445, 480, 496,
-];
-
-/** Convert slider index (0-28) to actual R820T gain in dB */
-function sliderToGainDb(index: number): string {
-	const tenths = R82XX_GAINS[Math.min(index, R82XX_GAINS.length - 1)] ?? 0;
-	return (tenths / 10).toFixed(1);
-}
-
 export const uiHelperMethods = {
-	formatGainDb(this: AppInstance, value: number): string {
-		return sliderToGainDb(value);
-	},
 	copyRemoteLink(this: AppInstance) {
 		navigator.clipboard.writeText(this.remoteLink).then(() => {
 			this.copyLinkSuccess = true;

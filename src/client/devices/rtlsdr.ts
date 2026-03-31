@@ -364,11 +364,15 @@ class R820T {
 		}
 	}
 
-	async setManualGain(gain: number): Promise<void> {
+	getGains(): number[] {
+		return R82XX_GAINS;
+	}
+
+	async setManualGain(gainIdx: number): Promise<void> {
 		// Slider value is an index into R82XX_GAINS (0-28).
 		// Look up the target gain in tenths of dB, then use the
 		// librtlsdr r82xx_set_gain algorithm to find LNA/mixer indices.
-		const gainTenths = R82XX_GAINS[Math.min(gain, R82XX_GAINS.length - 1)] ?? 0;
+		const gainTenths = R82XX_GAINS[Math.min(gainIdx, R82XX_GAINS.length - 1)] ?? 0;
 		let lnaIndex = 0;
 		let mixIndex = 0;
 		let totalGain = 0;
@@ -634,6 +638,9 @@ const FC0012_BANDS: [number, number, number, number][] = [
 	[Infinity, 4, 0x0a, 0x02],
 ];
 
+const FC0012_GAINS = [-99, -40, 71, 179, 192];
+const FC0012_GAIN_REGS = [0x02, 0x00, 0x08, 0x17, 0x10];
+
 class FC0012 {
 	private com: RtlCom;
 	private xtalFreq: number;
@@ -781,20 +788,15 @@ class FC0012 {
 		await this.com.writeI2CReg(FC0012_I2C_ADDR, 0x0d, 0x00);
 	}
 
-	async setManualGain(gain: number): Promise<void> {
+	getGains(): number[] {
+		return FC0012_GAINS;
+	}
+
+	async setManualGain(gainIdx: number): Promise<void> {
 		// FC0012 has 5 discrete LNA gain steps (from librtlsdr tuner_fc0012.c).
-		// Input is slider value 0-50, map to nearest step:
-		//   0-10: -9.9 dB (reg 0x02)
-		//  11-20: -4.0 dB (reg 0x00)
-		//  21-30:  7.1 dB (reg 0x08)
-		//  31-40: 17.9 dB (reg 0x17)
-		//  41-50: 19.2 dB (reg 0x10)
-		let lnaBits: number;
-		if (gain <= 10) lnaBits = 0x02;       // -9.9 dB
-		else if (gain <= 20) lnaBits = 0x00;  // -4.0 dB
-		else if (gain <= 30) lnaBits = 0x08;  //  7.1 dB
-		else if (gain <= 40) lnaBits = 0x17;  // 17.9 dB
-		else lnaBits = 0x10;                  // 19.2 dB
+		// We expect gainIdx precisely from 0 to 4.
+		const index = Math.max(0, Math.min(gainIdx, FC0012_GAIN_REGS.length - 1));
+		const lnaBits = FC0012_GAIN_REGS[index];
 
 		// Read-modify-write register 0x13: preserve bits 5-7, set gain in bits 0-4
 		// (matches librtlsdr fc0012_set_gain)
@@ -1157,17 +1159,15 @@ class E4000 {
 		await this.regSetMask(E4K_REG_AGC11, 0x07, 0);
 	}
 
-	async setManualGain(gain: number): Promise<void> {
-		// Map 0-50 slider → closest LNA gain step (in units of 0.1 dB tenths)
-		// gain=0 → auto, gain=1..50 → map to dB range 0..30
-		const tenths = Math.round(gain * 6); // 50 → 300 tenths = 30 dB
-		// Find closest LNA gain entry
-		let bestRegVal = 0;
-		let bestDelta = Infinity;
-		for (const [lnaTenths, regVal] of E4K_LNA_GAIN) {
-			const d = Math.abs(tenths - lnaTenths);
-			if (d < bestDelta) { bestDelta = d; bestRegVal = regVal; }
-		}
+	getGains(): number[] {
+		return E4K_LNA_GAIN.map(g => g[0]);
+	}
+
+	async setManualGain(gainIdx: number): Promise<void> {
+		// Receive slider index
+		const index = Math.max(0, Math.min(gainIdx, E4K_LNA_GAIN.length - 1));
+		const bestRegVal = E4K_LNA_GAIN[index][1];
+
 		// Set manual mode
 		await this.regSetMask(E4K_REG_AGC1, E4K_AGC1_MOD_MASK, E4K_AGC_MOD_SERIAL);
 		await this.regSetMask(E4K_REG_AGC7, E4K_AGC7_MIX_GAIN_AUTO, 0);
@@ -1345,15 +1345,15 @@ class FC0013 {
 		await this.com.writeI2CReg(FC0013_I2C_ADDR, 0x13, 0x0a); // fixed IF gain
 	}
 
-	async setManualGain(gain: number): Promise<void> {
-		// gain 0-50 → scale to gain table range (-9.9 to +19.7 dB = -99 to 197 tenths)
-		const tenths = Math.round(-99 + gain * (197 - (-99)) / 50);
-		let bestReg = FC0013_LNA_GAINS[0][1];
-		let bestDelta = Infinity;
-		for (const [t, r] of FC0013_LNA_GAINS) {
-			const d = Math.abs(tenths - t);
-			if (d < bestDelta) { bestDelta = d; bestReg = r; }
-		}
+	getGains(): number[] {
+		return FC0013_LNA_GAINS.map(g => g[0]);
+	}
+
+	async setManualGain(gainIdx: number): Promise<void> {
+		// Receive slider index
+		const index = Math.max(0, Math.min(gainIdx, FC0013_LNA_GAINS.length - 1));
+		const bestReg = FC0013_LNA_GAINS[index][1];
+
 		// Enable manual gain mode
 		const cur = await this.com.readI2CReg(FC0013_I2C_ADDR, 0x0d);
 		await this.com.writeI2CReg(FC0013_I2C_ADDR, 0x0d, cur | 0x08);
@@ -1554,7 +1554,8 @@ interface TunerDriver {
 	init(): Promise<void>;
 	setFrequency(freq: number): Promise<number>;
 	setAutoGain(): Promise<void>;
-	setManualGain(gain: number): Promise<void>;
+	setManualGain(gainIdx: number): Promise<void>;
+	getGains?(): number[];
 	close(): Promise<void>;
 }
 
@@ -1566,7 +1567,7 @@ export class RtlSdrDevice implements SdrDevice {
 		2048000, 2160000, 2400000, 2560000, 2880000, 3200000,
 	];
 	readonly sampleFormat = 'int8' as const;
-	readonly gainControls: GainControl[] = [
+	gainControls: GainControl[] = [
 		{ name: 'Tuner', min: 0, max: 28, step: 1, default: 12, type: 'slider' },
 		{ name: 'Bias-T', min: 0, max: 1, step: 1, default: 0, type: 'checkbox' },
 	];
@@ -1784,6 +1785,20 @@ export class RtlSdrDevice implements SdrDevice {
 
 		await this.tuner.init();
 		console.log(`RTL-SDR: ${detectedTuner} tuner initialized`);
+		if (this.tuner.getGains) {
+			const gains = this.tuner.getGains();
+			if (gains.length > 0) {
+				this.gainControls[0] = {
+					name: 'Tuner',
+					min: 0,
+					max: gains.length - 1,
+					step: 1,
+					default: Math.min(Math.floor(gains.length / 2), gains.length - 1),
+					options: gains,
+					type: 'slider'
+				};
+			}
+		}
 		await this.tuner.setAutoGain();
 		await this.com.closeI2C();
 		console.log('RTL-SDR: device ready');
