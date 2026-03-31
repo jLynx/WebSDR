@@ -1819,84 +1819,78 @@ export class RtlSdrDevice implements SdrDevice {
 	}
 
 	async setSampleRate(rate: number): Promise<void> {
-		for (let attempt = 0; attempt < 5; attempt++) {
+		return await this.withUsbLock(async () => {
+			await this.pauseRx();
 			try {
-				return await this.withUsbLock(async () => {
-					await this.pauseRx();
-					try {
-						console.log('RTL-SDR: setSampleRate', rate);
-						const xtalFreq = Math.floor(XTAL_FREQ * (1 + this.ppm / 1000000));
-						let ratio = Math.floor(xtalFreq * (1 << 22) / rate);
-						ratio &= 0x0ffffffc;
-						const ppmOffset = -1 * Math.floor(this.ppm * (1 << 24) / 1000000);
-						await this.com.writeDemodReg(1, 0x9f, (ratio >> 24) & 0xff, 1);
-						await this.com.writeDemodReg(1, 0xa0, (ratio >> 16) & 0xff, 1);
-						await this.com.writeDemodReg(1, 0xa1, (ratio >> 8) & 0xff, 1);
-						await this.com.writeDemodReg(1, 0xa2, ratio & 0xff, 1);
-						await this.com.writeDemodReg(1, 0x3e, (ppmOffset >> 8) & 0x3f, 1);
-						await this.com.writeDemodReg(1, 0x3f, ppmOffset & 0xff, 1);
-						await this.com.writeDemodReg(1, 0x01, 0x14, 1);
-						await this.com.writeDemodReg(1, 0x01, 0x10, 1);
-						console.log('RTL-SDR: setSampleRate complete');
-					} finally {
-						this.resumeRx();
-					}
-				});
-			} catch (e) {
-				if (attempt >= 4) throw e;
-				await new Promise(r => setTimeout(r, 50));
+				// Flush the Endpoint buffer since pauseRx() stopped bulk polling 
+				// and the FIFO rapidly overrun, wedging the ASIC.
+				await this.com.writeReg(BLOCK.USB, REG.EPA_CTL, 0x0210, 2);
+				await this.com.writeReg(BLOCK.USB, REG.EPA_CTL, 0x0000, 2);
+
+				console.log('RTL-SDR: setSampleRate', rate);
+				const xtalFreq = Math.floor(XTAL_FREQ * (1 + this.ppm / 1000000));
+				let ratio = Math.floor(xtalFreq * (1 << 22) / rate);
+				ratio &= 0x0ffffffc;
+				const ppmOffset = -1 * Math.floor(this.ppm * (1 << 24) / 1000000);
+				await this.com.writeDemodReg(1, 0x9f, (ratio >> 24) & 0xff, 1);
+				await this.com.writeDemodReg(1, 0xa0, (ratio >> 16) & 0xff, 1);
+				await this.com.writeDemodReg(1, 0xa1, (ratio >> 8) & 0xff, 1);
+				await this.com.writeDemodReg(1, 0xa2, ratio & 0xff, 1);
+				await this.com.writeDemodReg(1, 0x3e, (ppmOffset >> 8) & 0x3f, 1);
+				await this.com.writeDemodReg(1, 0x3f, ppmOffset & 0xff, 1);
+				await this.com.writeDemodReg(1, 0x01, 0x14, 1);
+				await this.com.writeDemodReg(1, 0x01, 0x10, 1);
+				console.log('RTL-SDR: setSampleRate complete');
+			} finally {
+				this.resumeRx();
 			}
-		}
+		});
 	}
 
 	async setFrequency(freqHz: number): Promise<void> {
-		for (let attempt = 0; attempt < 5; attempt++) {
+		return await this.withUsbLock(async () => {
+			await this.pauseRx();
 			try {
-				return await this.withUsbLock(async () => {
-					await this.pauseRx();
-					try {
-						console.log('RTL-SDR: setFrequency', freqHz);
-						if (this.tunerName.startsWith('FC0012')) {
-							await this.setGpioBit(6, freqHz > 300000000);
-						}
-						await this.com.openI2C();
-						await this.tuner.setFrequency(freqHz);
-						await this.com.closeI2C();
-					} finally {
-						this.resumeRx();
-					}
-				});
-			} catch(e) {
-				if (attempt >= 4) throw e;
-				await new Promise(r => setTimeout(r, 50));
+				await this.com.writeReg(BLOCK.USB, REG.EPA_CTL, 0x0210, 2);
+				await this.com.writeReg(BLOCK.USB, REG.EPA_CTL, 0x0000, 2);
+
+				console.log('RTL-SDR: setFrequency', freqHz);
+				if (this.tunerName.startsWith('FC0012')) {
+					await this.setGpioBit(6, freqHz > 300000000);
+				}
+				await this.com.openI2C();
+				await this.tuner.setFrequency(freqHz);
+				await this.com.closeI2C();
+			} finally {
+				this.resumeRx();
 			}
-		}
+		});
 	}
 
 	async setGain(name: string, value: number): Promise<void> {
+		return await this.setGains({ [name]: value });
+	}
+
+	async setGains(gains: Record<string, number>): Promise<void> {
 		if (!this.tuner) return;
-		for (let i = 0; i < 5; i++) {
+		return await this.withUsbLock(async () => {
+			await this.pauseRx();
 			try {
-				return await this.withUsbLock(async () => {
-					await this.pauseRx();
-					try {
-						if (name === 'Tuner') {
-							await this.com.openI2C();
-							await this.tuner.setManualGain(value);
-							await this.com.closeI2C();
-						} else if (name === 'Bias-T') {
-							await this.setBiasTee(!!value);
-						}
-					} finally {
-						this.resumeRx();
-					}
-				});
-			} catch (err) {
-				console.warn(`RTL-SDR: Error setting gain, attempt ${i + 1}/5`, err);
-				if (i === 4) throw err;
-				await new Promise(resolve => setTimeout(resolve, 50));
+				await this.com.writeReg(BLOCK.USB, REG.EPA_CTL, 0x0210, 2);
+				await this.com.writeReg(BLOCK.USB, REG.EPA_CTL, 0x0000, 2);
+
+				if ('Tuner' in gains) {
+					await this.com.openI2C();
+					await this.tuner.setManualGain(gains['Tuner']);
+					await this.com.closeI2C();
+				}
+				if ('Bias-T' in gains) {
+					await this.setBiasTee(!!gains['Bias-T']);
+				}
+			} finally {
+				this.resumeRx();
 			}
-		}
+		});
 	}
 
 

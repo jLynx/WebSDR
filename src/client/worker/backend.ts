@@ -271,6 +271,17 @@ export class Backend {
 		await this.device.setGain(name, value);
 	}
 
+	async setGains(gains: Record<string, number>): Promise<void> {
+		if (!this.device) throw new Error('No device connected');
+		if (this.device.setGains) {
+			await this.device.setGains(gains);
+		} else {
+			for (const [name, value] of Object.entries(gains)) {
+				await this.device.setGain(name, value);
+			}
+		}
+	}
+
 	async startRx(callback: any): Promise<void> {
 		if (!this.device) throw new Error('No device connected');
 		await this.device.startRx(callback);

@@ -124,9 +124,7 @@ createApp({
 				}
 
 				if (this.running && this.connected && this.backend) {
-					for (const [name, value] of Object.entries(this.gains)) {
-						this.backend.setGain(name, value as number);
-					}
+					this.backend.setGains({ ...this.gains }).catch(console.error);
 				}
 
 				if (this.remoteMode === 'host' && this._webrtc) {
