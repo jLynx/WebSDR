@@ -1819,55 +1819,65 @@ export class RtlSdrDevice implements SdrDevice {
 	}
 
 	async setSampleRate(rate: number): Promise<void> {
-		return this.withUsbLock(async () => {
-			console.log('RTL-SDR: setSampleRate', rate);
-			// Cancel any active bulk transfers before reconfiguring the demod.
-			await this.pauseRx();
-			const xtalFreq = Math.floor(XTAL_FREQ * (1 + this.ppm / 1000000));
-			let ratio = Math.floor(xtalFreq * (1 << 22) / rate);
-			ratio &= 0x0ffffffc;
-			const ppmOffset = -1 * Math.floor(this.ppm * (1 << 24) / 1000000);
-			await this.com.writeDemodReg(1, 0x9f, (ratio >> 24) & 0xff, 1);
-			await this.com.writeDemodReg(1, 0xa0, (ratio >> 16) & 0xff, 1);
-			await this.com.writeDemodReg(1, 0xa1, (ratio >> 8) & 0xff, 1);
-			await this.com.writeDemodReg(1, 0xa2, ratio & 0xff, 1);
-			await this.com.writeDemodReg(1, 0x3e, (ppmOffset >> 8) & 0x3f, 1);
-			await this.com.writeDemodReg(1, 0x3f, ppmOffset & 0xff, 1);
-			await this.com.writeDemodReg(1, 0x01, 0x14, 1);
-			await this.com.writeDemodReg(1, 0x01, 0x10, 1);
-			console.log('RTL-SDR: setSampleRate complete');
-		});
+		for (let attempt = 0; attempt < 5; attempt++) {
+			try {
+				return await this.withUsbLock(async () => {
+					await this.pauseRx();
+					try {
+						console.log('RTL-SDR: setSampleRate', rate);
+						const xtalFreq = Math.floor(XTAL_FREQ * (1 + this.ppm / 1000000));
+						let ratio = Math.floor(xtalFreq * (1 << 22) / rate);
+						ratio &= 0x0ffffffc;
+						const ppmOffset = -1 * Math.floor(this.ppm * (1 << 24) / 1000000);
+						await this.com.writeDemodReg(1, 0x9f, (ratio >> 24) & 0xff, 1);
+						await this.com.writeDemodReg(1, 0xa0, (ratio >> 16) & 0xff, 1);
+						await this.com.writeDemodReg(1, 0xa1, (ratio >> 8) & 0xff, 1);
+						await this.com.writeDemodReg(1, 0xa2, ratio & 0xff, 1);
+						await this.com.writeDemodReg(1, 0x3e, (ppmOffset >> 8) & 0x3f, 1);
+						await this.com.writeDemodReg(1, 0x3f, ppmOffset & 0xff, 1);
+						await this.com.writeDemodReg(1, 0x01, 0x14, 1);
+						await this.com.writeDemodReg(1, 0x01, 0x10, 1);
+						console.log('RTL-SDR: setSampleRate complete');
+					} finally {
+						this.resumeRx();
+					}
+				});
+			} catch (e) {
+				if (attempt >= 4) throw e;
+				await new Promise(r => setTimeout(r, 50));
+			}
+		}
 	}
 
 	async setFrequency(freqHz: number): Promise<void> {
-		return this.withUsbLock(async () => {
-			console.log('RTL-SDR: setFrequency', freqHz);
-			await this.pauseRx();
+		for (let attempt = 0; attempt < 5; attempt++) {
 			try {
-				// FC0012 requires GPIO6 toggle for V-band (>300MHz) vs U-band filter
-				if (this.tunerName.startsWith('FC0012')) {
-					await this.setGpioBit(6, freqHz > 300000000);
-				}
-				await this.com.openI2C();
-				// R820T/R828D: the R820T class expects the raw user frequency.
-				// The IF offset is applied internally in the RTL2832U demod registers
-				// (set during open() at lines 1562–1567). Do NOT double-offset here.
-				await this.tuner.setFrequency(freqHz);
-				await this.com.closeI2C();
-			} finally {
-				this.resumeRx();
+				return await this.withUsbLock(async () => {
+					await this.pauseRx();
+					try {
+						console.log('RTL-SDR: setFrequency', freqHz);
+						if (this.tunerName.startsWith('FC0012')) {
+							await this.setGpioBit(6, freqHz > 300000000);
+						}
+						await this.com.openI2C();
+						await this.tuner.setFrequency(freqHz);
+						await this.com.closeI2C();
+					} finally {
+						this.resumeRx();
+					}
+				});
+			} catch(e) {
+				if (attempt >= 4) throw e;
+				await new Promise(r => setTimeout(r, 50));
 			}
-		});
+		}
 	}
 
 	async setGain(name: string, value: number): Promise<void> {
-		// The first control transfer after bulk streaming often fails on
-		// Windows/WebUSB. Retrying the full pause-resume cycle (mimicking
-		// the "scrub" behavior where rapid attempts eventually succeed)
-		// reliably gets through on the second or third attempt.
-		for (let attempt = 0; attempt < 5; attempt++) {
+		if (!this.tuner) return;
+		for (let i = 0; i < 5; i++) {
 			try {
-				await this.withUsbLock(async () => {
+				return await this.withUsbLock(async () => {
 					await this.pauseRx();
 					try {
 						if (name === 'Tuner') {
@@ -1881,19 +1891,16 @@ export class RtlSdrDevice implements SdrDevice {
 						this.resumeRx();
 					}
 				});
-				return;
-			} catch {
-				if (attempt >= 4) throw new Error(`RTL-SDR: setGain(${name}) failed after 5 attempts`);
+			} catch (err) {
+				console.warn(`RTL-SDR: Error setting gain, attempt ${i + 1}/5`, err);
+				if (i === 4) throw err;
+				await new Promise(resolve => setTimeout(resolve, 50));
 			}
 		}
 	}
 
-	/**
-	 * Stop bulk transfer loops so control transfers can proceed.
-	 * Sets rxRunning to null and waits for the loops to finish their
-	 * current readBulk call naturally — no releaseInterface needed.
-	 * At 2.88 Msps with 64K transfers, each loop drains in ~11ms.
-	 */
+
+
 	private async pauseRx(): Promise<void> {
 		if (!this.rxRunning) return;
 		const promises = this.rxRunning;
@@ -1907,10 +1914,14 @@ export class RtlSdrDevice implements SdrDevice {
 		} catch (_) { /* ignore */ }
 	}
 
-	/** Restart bulk transfer loops after pauseRx, without resetting the endpoint. */
+	/** Restart bulk transfer loops after pauseRx. */
 	private resumeRx(): void {
 		if (!this.rxCallback || this.rxRunning) return;
-		this.launchBulkLoops(this.rxCallback);
+		// Restart bulk loops in the background. This will implicitly use withUsbLock
+		// to safely flush the EPA_CTL buffers and clear the WinUSB lockup from pauseRx().
+		this.startRx(this.rxCallback).catch(err => {
+			console.error('RTL-SDR: Failed to resume Rx:', err);
+		});
 	}
 
 	private async setGpioOutput(gpioNum: number): Promise<void> {

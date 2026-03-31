@@ -234,6 +234,36 @@ export class Backend {
 	async setFrequency(freqHz: number): Promise<void> {
 		if (!this.device) throw new Error('No device connected');
 		await this.device.setFrequency(freqHz);
+		
+		this._centerFreq = freqHz / 1e6;
+
+		if (this.vfoParams && this.dspWorkers) {
+			for (let i = 0; i < this.vfoParams.length; i++) {
+				if (this.dspWorkers[i]) {
+					this.dspWorkers[i].postMessage({
+						type: 'configure',
+						params: this.vfoParams[i],
+						centerFreq: this._centerFreq
+					});
+				}
+			}
+		}
+
+		if (this._remoteClients) {
+			for (const rc of this._remoteClients.values()) {
+				if (rc.workers && rc.params) {
+					for (let i = 0; i < rc.workers.length; i++) {
+						if (rc.workers[i]) {
+							rc.workers[i]!.postMessage({
+								type: 'configure',
+								params: rc.params[i],
+								centerFreq: this._centerFreq
+							});
+						}
+					}
+				}
+			}
+		}
 	}
 
 	async setGain(name: string, value: number): Promise<void> {
