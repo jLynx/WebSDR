@@ -26,6 +26,8 @@ import type { RxStreamOpts, VfoParams, VfoState, PerfCounters } from './types';
 import { IF_RATES, AUDIO_RATE } from './types';
 import type { Backend } from './backend';
 
+let _streamStarting = false;
+
 export async function startRxStream(
 	backend: Backend,
 	opts: RxStreamOpts,
@@ -34,6 +36,8 @@ export async function startRxStream(
 	whisperCallback: any,
 	pocsagCallback: any
 ): Promise<void> {
+	if (_streamStarting) return;
+	_streamStarting = true;
 	backend._remoteClientAudioCb = audioCallback; // Save reference for when chunk arrives
 	backend._remoteClientWhisperCb = whisperCallback; // Save for remote client transcription
 	try {
@@ -593,6 +597,15 @@ export async function startRxStream(
 		// Expose for worker closure inside spawnWorker
 		backend._handleWorkerAudio = handleWorkerAudio;
 
+		// Apply initial gains BEFORE starting bulk reads to avoid
+		// control transfer conflicts with in-flight bulk transfers.
+		// Matches librtlsdr / SDR++ which configure everything before streaming.
+		if (gains) {
+			for (const [name, value] of Object.entries(gains)) {
+				await device.setGain(name, value);
+			}
+		}
+
 		await device.startRx((data: any) => {
 			perf.usbCallbacks++;
 
@@ -674,13 +687,6 @@ export async function startRxStream(
 			backend.sabPoolIndex = (backend.sabPoolIndex! + 1) % SAB_POOL_SIZE;
 		});
 
-		// Apply initial gains from opts
-		if (gains) {
-			for (const [name, value] of Object.entries(gains)) {
-				await device.setGain(name, value);
-			}
-		}
-
 		// Reinitialize all remote client DSP workers with the new sample rate
 		// and shared IQ buffers. Without this, remote workers hold stale references
 		// from the previous startRxStream and produce garbled audio.
@@ -688,5 +694,7 @@ export async function startRxStream(
 	} catch (e) {
 		console.error("DEBUG CRASH IN STARTRXSTREAM:", e);
 		throw e;
+	} finally {
+		_streamStarting = false;
 	}
 }

@@ -84,30 +84,35 @@ createApp({
 			}
 		}, { deep: true });
 
+		let gainDebounce: ReturnType<typeof setTimeout> | null = null;
 		this.$watch('gains', () => {
-			if (this.remoteMode === 'client') {
-				if (!this._applyingSync) {
-					// Send all gain values generically
+			// Debounce: wait for slider to settle before sending USB commands.
+			// Dragging fires many intermediate values — only the final one matters.
+			if (gainDebounce) clearTimeout(gainDebounce);
+			gainDebounce = setTimeout(() => {
+				gainDebounce = null;
+
+				if (this.remoteMode === 'client') {
+					if (!this._applyingSync) {
+						for (const [name, value] of Object.entries(this.gains)) {
+							this._webrtc.sendCommand({ type: 'requestChange', target: 'gains', property: name, value });
+						}
+					}
+					return;
+				}
+
+				if (this.running && this.connected && this.backend) {
 					for (const [name, value] of Object.entries(this.gains)) {
-						this._webrtc.sendCommand({ type: 'requestChange', target: 'gains', property: name, value });
+						this.backend.setGain(name, value as number);
 					}
 				}
-				return;
-			}
 
-			if (this.running && this.connected && this.backend) {
-				// Apply all gains generically via the device-agnostic API
-				for (const [name, value] of Object.entries(this.gains)) {
-					this.backend.setGain(name, value as number);
+				if (this.remoteMode === 'host' && this._webrtc) {
+					this._webrtc.sendCommand({ type: 'sync', gains: this.gains, locks: this.locks });
 				}
-			}
 
-			// Broadcast updated gains to all remote clients
-			if (this.remoteMode === 'host' && this._webrtc) {
-				this._webrtc.sendCommand({ type: 'sync', gains: this.gains, locks: this.locks });
-			}
-
-			this.saveSetting();
+				this.saveSetting();
+			}, 100);
 		}, { deep: true });
 
 		this.$watch('vfos', () => {
