@@ -84,6 +84,9 @@
 				<button class="icon-btn" @click="togglePocsagPanel" :class="{ active: pocsag.panelOpen }" title="POCSAG Pager Decoder">
 					<svg viewBox="0 0 24 24" width="24" height="24"><path fill="currentColor" d="M20 2H4c-1.1 0-2 .9-2 2v18l4-4h14c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2zm-3 12H7v-2h10v2zm0-3H7V9h10v2zm0-3H7V6h10v2z"/></svg>
 				</button>
+				<button class="icon-btn" @click="toggleRdsPanel" :class="{ active: rds.panelOpen }" title="FM RDS Decoder">
+					<svg viewBox="0 0 24 24" width="24" height="24"><path fill="currentColor" d="M20 6H4c-1.1 0-2 .9-2 2v8c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V8c0-1.1-.9-2-2-2zm0 10H4V8h16v8zM6 10h2v4H6zm3 0h5v4H9z"/></svg>
+				</button>
 				<button class="icon-btn" @click="showActivity = !showActivity" :class="{ active: showActivity }" title="Frequency Activity Tracker">
 					<svg viewBox="0 0 24 24" width="24" height="24"><path fill="currentColor" d="M3.5 18.49l6-6.01 4 4L22 6.92l-1.41-1.41-7.09 7.97-4-4L2 16.99l1.5 1.5z"/></svg>
 				</button>
@@ -290,7 +293,7 @@
 
 						<div class="form-row full-checkbox-row" v-if="vfo.mode === 'wfm'">
 							<label class="custom-checkbox">
-								<input type="checkbox" v-model="vfo.rds">
+								<input type="checkbox" v-model="vfo.rds" @change="updateBackendVfoParams(i)">
 								<span class="checkmark"></span>
 								Decode RDS
 							</label>
@@ -583,6 +586,58 @@
 					<span class="pocsag-baud" v-if="entry.baud">{{ entry.baud }}Bd</span>
 					<span class="pocsag-text" v-if="entry.text">{{ entry.text }}</span>
 					<span class="pocsag-text pocsag-tone" v-else>(tone only)</span>
+				</div>
+			</div>
+		</div>
+
+		<!-- RDS Panel -->
+		<div class="pocsag-panel" v-if="rds.panelOpen">
+			<div class="pocsag-header">
+				<div class="pocsag-title">
+					<svg viewBox="0 0 24 24" width="16" height="16" style="vertical-align:middle;margin-right:4px"><path fill="currentColor" d="M20 6H4c-1.1 0-2 .9-2 2v8c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V8c0-1.1-.9-2-2-2zm0 10H4V8h16v8zM6 10h2v4H6zm3 0h5v4H9z"/></svg>
+					FM RDS Decoder
+					<span class="pocsag-count" v-if="rdsStationList().length">{{ rdsStationList().length }} station{{ rdsStationList().length > 1 ? 's' : '' }}</span>
+				</div>
+				<div class="pocsag-controls">
+					<button class="btn transcript-btn" @click="clearRds" title="Clear RDS data">Clear</button>
+					<button class="btn transcript-btn" @click="exportRds" title="Export as text" :disabled="rds.log.length === 0">Export</button>
+				</div>
+			</div>
+			<div class="rds-split">
+				<!-- Left: Station cards -->
+				<div class="rds-stations-col">
+					<div v-if="rdsStationList().length === 0" class="pocsag-empty">
+						Enable "Decode RDS" on a WFM VFO and tune to an FM station.
+					</div>
+					<div v-for="stn in rdsStationList()" :key="stn.vfoIndex" class="rds-station-card" :style="{ borderLeftColor: vfoColor(stn.vfoIndex) }">
+						<div class="rds-station">
+							<span class="rds-ps" v-if="stn.ps">{{ stn.ps }}</span>
+							<span class="rds-freq">{{ stn.freq }}</span>
+						</div>
+						<div class="rds-station-meta">
+							<span class="rds-pi" v-if="stn.pi">PI:{{ stn.pi }}</span>
+							<span class="rds-pty" v-if="stn.ptyLabel">{{ stn.ptyLabel }}</span>
+							<span class="rds-flags" v-if="stn.tp || stn.ta">
+								<span v-if="stn.tp" class="rds-flag">TP</span>
+								<span v-if="stn.ta" class="rds-flag rds-ta">TA</span>
+							</span>
+						</div>
+						<div class="rds-rt" v-if="stn.rt">{{ stn.rt }}</div>
+					</div>
+				</div>
+				<!-- Right: Live log -->
+				<div class="rds-log-col" ref="rdsBody">
+					<div v-if="rds.log.length === 0" class="pocsag-empty">
+						Waiting for RDS data...
+					</div>
+					<div v-for="(entry, i) in rds.log" :key="i" class="pocsag-entry"
+						:style="entry.vfoIndex != null ? { borderLeftColor: vfoColor(entry.vfoIndex) } : {}">
+						<span class="pocsag-vfo-dot" v-if="entry.vfoIndex != null" :style="{ background: vfoColor(entry.vfoIndex) }" :title="'VFO ' + (entry.vfoIndex + 1)"></span>
+						<span class="pocsag-time">{{ entry.time }}</span>
+						<span class="pocsag-freq" :style="entry.vfoIndex != null ? { color: vfoColor(entry.vfoIndex) } : {}">{{ entry.freq }}</span>
+						<span class="pocsag-type">{{ entry.field }}</span>
+						<span class="pocsag-text">{{ entry.value }}</span>
+					</div>
 				</div>
 			</div>
 		</div>

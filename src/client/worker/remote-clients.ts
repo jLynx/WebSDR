@@ -67,6 +67,7 @@ export function _getOrCreateClientState(this: Backend, clientId: string): Remote
 			audioQueues: [],
 			mixBuf: null,
 			pocsagDecoders: [],
+			rdsDecoders: [],
 			squelchOpen: []
 		});
 	}
