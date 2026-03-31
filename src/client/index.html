@@ -184,7 +184,7 @@
 									<label>{{ gc.name }} Gain</label>
 									<div class="slider-group">
 										<input type="range" v-model.number="gains[gc.name]" :min="gc.min" :max="gc.max" :step="gc.step" :disabled="remoteMode === 'client' && locks[gc.name]">
-										<span class="val">{{ gains[gc.name] }}dB</span>
+										<span class="val">{{ gc.options ? (gc.options[gains[gc.name]] / 10).toFixed(1) : gains[gc.name] }} dB</span>
 									</div>
 								</template>
 								<template v-else>

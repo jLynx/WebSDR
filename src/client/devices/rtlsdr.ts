@@ -135,6 +135,16 @@ const MUX_CFGS: [number, number, number, number][] = [
 // Experimentally: LNA goes in 2.3dB steps, Mixer in 1.2dB steps.
 // (matches setManualGain logic in jtarrio/webrtlsdr r8xx.ts)
 
+// R820T gain tables — from librtlsdr tuner_r82xx.c
+const R82XX_LNA_GAIN_STEPS = [0, 9, 13, 40, 38, 13, 31, 22, 26, 31, 26, 14, 19, 5, 35, 13];
+const R82XX_MIXER_GAIN_STEPS = [0, 5, 10, 10, 19, 9, 10, 25, 17, 10, 8, 16, 13, 6, 3, -8];
+// 29 discrete gain values (tenths of dB) — matches rtlsdr_get_tuner_gains()
+const R82XX_GAINS = [
+	0, 9, 14, 27, 37, 77, 87, 125, 144, 157,
+	166, 197, 207, 229, 254, 280, 297, 328, 338, 364,
+	372, 386, 402, 421, 434, 439, 445, 480, 496,
+];
+
 const BIT_REVS = [
 	0x0, 0x8, 0x4, 0xc, 0x2, 0xa, 0x6, 0xe,
 	0x1, 0x9, 0x5, 0xd, 0x3, 0xb, 0x7, 0xf,
@@ -263,6 +273,7 @@ class RtlCom {
 class R820T {
 	private com: RtlCom;
 	private xtalFreq: number;
+	private ifFreq: number; // IF frequency (3.57 MHz typical) — added to PLL freq
 	private i2cAddr: number;
 	private vcoPowerRef: number; // R820T=2, R828D=1
 	private isR828D: boolean;
@@ -270,13 +281,16 @@ class R820T {
 	private shadowRegs!: Uint8Array;
 	private hasPllLock = false;
 	private lastInput = -1; // R828D antenna input tracking
+	private gpioCallback: ((gpio: number, on: boolean) => Promise<void>) | null;
 
-	constructor(com: RtlCom, xtalFreq: number, i2cAddr = R820T_I2C_ADDR, isR828D = false, isBlogV4 = false) {
+	constructor(com: RtlCom, xtalFreq: number, i2cAddr = R820T_I2C_ADDR, isR828D = false, isBlogV4 = false, ifFreq = IF_FREQ, gpioCallback: ((gpio: number, on: boolean) => Promise<void>) | null = null) {
 		this.com = com;
 		this.xtalFreq = xtalFreq;
+		this.ifFreq = ifFreq;
 		this.i2cAddr = i2cAddr;
 		this.isR828D = isR828D;
 		this.isBlogV4 = isBlogV4;
+		this.gpioCallback = gpioCallback;
 		// R828D uses VCO power ref of 1; R820T/R820T2 uses 2
 		this.vcoPowerRef = isR828D ? 1 : 2;
 	}
@@ -297,8 +311,9 @@ class R820T {
 		await this.initElectronics();
 	}
 
-	// setFrequency receives the raw user frequency (no IF offset).
-	// The IF offset is applied by the caller (RtlSdrDevice) before calling here.
+	// setFrequency receives the raw user frequency.
+	// The IF offset is added here before setting the PLL, matching
+	// librtlsdr's lo_freq = upconvert_freq + priv->int_freq.
 	async setFrequency(freq: number): Promise<number> {
 		if (this.isBlogV4) {
 			const upconvertFreq = freq <= 28800000 ? freq + 28800000 : freq;
@@ -311,13 +326,17 @@ class R820T {
 			if (band !== this.lastInput) {
 				this.lastInput = band;
 				await this.writeRegMask(0x06, band === 0 ? 0x08 : 0x00, 0x08); // cable2
+				// GPIO 5 controls the upconverter bypass relay (matches librtlsdr)
+				if (this.gpioCallback) await this.gpioCallback(5, band !== 0);
 				await this.writeRegMask(0x05, band === 1 ? 0x40 : 0x00, 0x40); // cable1
-				await this.writeRegMask(0x05, band === 2 ? 0x20 : 0x00, 0x20); // air_in
+				// air_in: active-low — clear for UHF (active), set for others (disabled)
+				await this.writeRegMask(0x05, band === 2 ? 0x00 : 0x20, 0x20); // air_in
 			}
-			return await this.setPll(upconvertFreq);
+			return await this.setPll(upconvertFreq + this.ifFreq);
 		} else {
+			const loFreq = freq + this.ifFreq;
 			await this.setMux(freq);
-			const result = await this.setPll(freq);
+			const result = await this.setPll(loFreq);
 			// R828D: switch Cable1 LNA on/off at 345 MHz threshold
 			if (this.isR828D) {
 				const input = freq > 345000000 ? 0x00 : 0x60;
@@ -345,24 +364,37 @@ class R820T {
 		}
 	}
 
-	async setManualGain(gain: number): Promise<void> {
-		// Experimentally: LNA goes in 2.3dB steps, Mixer in 1.2dB steps
-		let fullsteps = Math.floor(gain / 3.5);
-		const halfsteps = gain - 3.5 * fullsteps >= 2.3 ? 1 : 0;
-		if (fullsteps < 0) fullsteps = 0;
-		if (fullsteps > 15) fullsteps = 15;
-		const lnaValue = fullsteps + (fullsteps === 15 ? 0 : halfsteps);
-		const mixerValue = fullsteps;
-		// [4] lna gain manual
-		await this.writeRegMask(0x05, 0b00010000, 0b00010000);
+	getGains(): number[] {
+		return R82XX_GAINS;
+	}
+
+	async setManualGain(gainIdx: number): Promise<void> {
+		// Slider value is an index into R82XX_GAINS (0-28).
+		// Look up the target gain in tenths of dB, then use the
+		// librtlsdr r82xx_set_gain algorithm to find LNA/mixer indices.
+		const gainTenths = R82XX_GAINS[Math.min(gainIdx, R82XX_GAINS.length - 1)] ?? 0;
+		let lnaIndex = 0;
+		let mixIndex = 0;
+		let totalGain = 0;
+		for (let i = 0; i < 15; i++) {
+			if (totalGain >= gainTenths) break;
+			totalGain += R82XX_LNA_GAIN_STEPS[++lnaIndex];
+			if (totalGain >= gainTenths) break;
+			totalGain += R82XX_MIXER_GAIN_STEPS[++mixIndex];
+		}
+		// [4] LNA gain manual
+		await this.writeRegMask(0x05, 0x10, 0x10);
 		// [4] mixer gain manual
-		await this.writeRegMask(0x07, 0b00000000, 0b00010000);
-		// [4] vga mode manual [3:0] vga gain 16dB
-		await this.writeRegMask(0x0c, 0b00001000, 0b10011111);
-		// [3:0] lna gain
-		await this.writeRegMask(0x05, lnaValue, 0b00001111);
-		// [3:0] mixer gain
-		await this.writeRegMask(0x07, mixerValue, 0b00001111);
+		await this.writeRegMask(0x07, 0x00, 0x10);
+		// Read tuner status — librtlsdr reads 4 bytes from reg 0x00
+		// between mode switch and VGA set to let the tuner latch
+		await this.readRegBuffer(0x00, 4);
+		// [4] VGA mode manual [3:0] VGA gain 16.3dB
+		await this.writeRegMask(0x0c, 0x08, 0x9f);
+		// [3:0] LNA gain index
+		await this.writeRegMask(0x05, lnaIndex, 0x0f);
+		// [3:0] mixer gain index
+		await this.writeRegMask(0x07, mixIndex, 0x0f);
 	}
 
 	async close(): Promise<void> {
@@ -606,6 +638,9 @@ const FC0012_BANDS: [number, number, number, number][] = [
 	[Infinity, 4, 0x0a, 0x02],
 ];
 
+const FC0012_GAINS = [-99, -40, 71, 179, 192];
+const FC0012_GAIN_REGS = [0x02, 0x00, 0x08, 0x17, 0x10];
+
 class FC0012 {
 	private com: RtlCom;
 	private xtalFreq: number;
@@ -720,6 +755,11 @@ class FC0012 {
 		await this.com.writeI2CReg(FC0012_I2C_ADDR, 0x0e, 0x80);
 		await this.com.writeI2CReg(FC0012_I2C_ADDR, 0x0e, 0x00);
 
+		// Allow VCO to settle before readback — the PLL needs time to lock
+		// after calibration, especially during rapid frequency changes where
+		// the previous VCO state may still be draining.
+		await new Promise(r => setTimeout(r, 5));
+
 		// VCO re-calibration: read back and adjust if out of range
 		await this.com.writeI2CReg(FC0012_I2C_ADDR, 0x0e, 0x00);
 		try {
@@ -753,20 +793,15 @@ class FC0012 {
 		await this.com.writeI2CReg(FC0012_I2C_ADDR, 0x0d, 0x00);
 	}
 
-	async setManualGain(gain: number): Promise<void> {
+	getGains(): number[] {
+		return FC0012_GAINS;
+	}
+
+	async setManualGain(gainIdx: number): Promise<void> {
 		// FC0012 has 5 discrete LNA gain steps (from librtlsdr tuner_fc0012.c).
-		// Input is slider value 0-50, map to nearest step:
-		//   0-10: -9.9 dB (reg 0x02)
-		//  11-20: -4.0 dB (reg 0x00)
-		//  21-30:  7.1 dB (reg 0x08)
-		//  31-40: 17.9 dB (reg 0x17)
-		//  41-50: 19.2 dB (reg 0x10)
-		let lnaBits: number;
-		if (gain <= 10) lnaBits = 0x02;       // -9.9 dB
-		else if (gain <= 20) lnaBits = 0x00;  // -4.0 dB
-		else if (gain <= 30) lnaBits = 0x08;  //  7.1 dB
-		else if (gain <= 40) lnaBits = 0x17;  // 17.9 dB
-		else lnaBits = 0x10;                  // 19.2 dB
+		// We expect gainIdx precisely from 0 to 4.
+		const index = Math.max(0, Math.min(gainIdx, FC0012_GAIN_REGS.length - 1));
+		const lnaBits = FC0012_GAIN_REGS[index];
 
 		// Read-modify-write register 0x13: preserve bits 5-7, set gain in bits 0-4
 		// (matches librtlsdr fc0012_set_gain)
@@ -1129,17 +1164,15 @@ class E4000 {
 		await this.regSetMask(E4K_REG_AGC11, 0x07, 0);
 	}
 
-	async setManualGain(gain: number): Promise<void> {
-		// Map 0-50 slider → closest LNA gain step (in units of 0.1 dB tenths)
-		// gain=0 → auto, gain=1..50 → map to dB range 0..30
-		const tenths = Math.round(gain * 6); // 50 → 300 tenths = 30 dB
-		// Find closest LNA gain entry
-		let bestRegVal = 0;
-		let bestDelta = Infinity;
-		for (const [lnaTenths, regVal] of E4K_LNA_GAIN) {
-			const d = Math.abs(tenths - lnaTenths);
-			if (d < bestDelta) { bestDelta = d; bestRegVal = regVal; }
-		}
+	getGains(): number[] {
+		return E4K_LNA_GAIN.map(g => g[0]);
+	}
+
+	async setManualGain(gainIdx: number): Promise<void> {
+		// Receive slider index
+		const index = Math.max(0, Math.min(gainIdx, E4K_LNA_GAIN.length - 1));
+		const bestRegVal = E4K_LNA_GAIN[index][1];
+
 		// Set manual mode
 		await this.regSetMask(E4K_REG_AGC1, E4K_AGC1_MOD_MASK, E4K_AGC_MOD_SERIAL);
 		await this.regSetMask(E4K_REG_AGC7, E4K_AGC7_MIX_GAIN_AUTO, 0);
@@ -1275,6 +1308,9 @@ class FC0013 {
 		// VCO calibration
 		await this.com.writeI2CReg(FC0013_I2C_ADDR, 0x0e, 0x80);
 		await this.com.writeI2CReg(FC0013_I2C_ADDR, 0x0e, 0x00);
+
+		// Allow VCO to settle before readback
+		await new Promise(r => setTimeout(r, 5));
 		await this.com.writeI2CReg(FC0013_I2C_ADDR, 0x0e, 0x00);
 
 		// VCO re-calibration if out of range
@@ -1317,15 +1353,15 @@ class FC0013 {
 		await this.com.writeI2CReg(FC0013_I2C_ADDR, 0x13, 0x0a); // fixed IF gain
 	}
 
-	async setManualGain(gain: number): Promise<void> {
-		// gain 0-50 → scale to gain table range (-9.9 to +19.7 dB = -99 to 197 tenths)
-		const tenths = Math.round(-99 + gain * (197 - (-99)) / 50);
-		let bestReg = FC0013_LNA_GAINS[0][1];
-		let bestDelta = Infinity;
-		for (const [t, r] of FC0013_LNA_GAINS) {
-			const d = Math.abs(tenths - t);
-			if (d < bestDelta) { bestDelta = d; bestReg = r; }
-		}
+	getGains(): number[] {
+		return FC0013_LNA_GAINS.map(g => g[0]);
+	}
+
+	async setManualGain(gainIdx: number): Promise<void> {
+		// Receive slider index
+		const index = Math.max(0, Math.min(gainIdx, FC0013_LNA_GAINS.length - 1));
+		const bestReg = FC0013_LNA_GAINS[index][1];
+
 		// Enable manual gain mode
 		const cur = await this.com.readI2CReg(FC0013_I2C_ADDR, 0x0d);
 		await this.com.writeI2CReg(FC0013_I2C_ADDR, 0x0d, cur | 0x08);
@@ -1526,7 +1562,8 @@ interface TunerDriver {
 	init(): Promise<void>;
 	setFrequency(freq: number): Promise<number>;
 	setAutoGain(): Promise<void>;
-	setManualGain(gain: number): Promise<void>;
+	setManualGain(gainIdx: number): Promise<void>;
+	getGains?(): number[];
 	close(): Promise<void>;
 }
 
@@ -1538,8 +1575,8 @@ export class RtlSdrDevice implements SdrDevice {
 		2048000, 2160000, 2400000, 2560000, 2880000, 3200000,
 	];
 	readonly sampleFormat = 'int8' as const;
-	readonly gainControls: GainControl[] = [
-		{ name: 'Tuner', min: 0, max: 50, step: 1, default: 20, type: 'slider' },
+	gainControls: GainControl[] = [
+		{ name: 'Tuner', min: 0, max: 28, step: 1, default: 12, type: 'slider' },
 		{ name: 'Bias-T', min: 0, max: 1, step: 1, default: 0, type: 'checkbox' },
 	];
 
@@ -1698,11 +1735,17 @@ export class RtlSdrDevice implements SdrDevice {
 			
 			const tunerLabel = isBlogV4 ? 'R828D (Blog V4)' : (isR828D ? 'R828D' : 'R820T/R820T2');
 			console.log(`RTL-SDR: initializing ${tunerLabel} (vcoPowerRef=${isR828D ? 1 : 2}, xtal=${tunerFreq})`);
-			this.tuner = new R820T(this.com, tunerFreq, detectedAddr, isR828D, isBlogV4);
+			const gpioCallback = async (gpio: number, on: boolean) => {
+				await this.setGpioOutput(gpio);
+				await this.setGpioBit(gpio, on);
+			};
+			this.tuner = new R820T(this.com, tunerFreq, detectedAddr, isR828D, isBlogV4, IF_FREQ, isBlogV4 ? gpioCallback : null);
 			this.hasIfFreq = true;
 
-			// Set IF frequency offset for R82xx family
-			const multiplier = -1 * Math.floor(IF_FREQ * (1 << 22) / tunerFreq);
+			// Set IF frequency offset for R82xx family.
+			// The demod IF register is in the RTL2832U which always uses its own
+			// 28.8 MHz clock (XTAL_FREQ), regardless of the tuner crystal.
+			const multiplier = -1 * Math.floor(IF_FREQ * (1 << 22) / xtalFreq);
 			await this.com.writeDemodReg(1, 0xb1, 0x1a, 1);
 			await this.com.writeDemodReg(0, 0x08, 0x4d, 1);
 			await this.com.writeDemodReg(1, 0x19, (multiplier >> 16) & 0x3f, 1);
@@ -1750,6 +1793,20 @@ export class RtlSdrDevice implements SdrDevice {
 
 		await this.tuner.init();
 		console.log(`RTL-SDR: ${detectedTuner} tuner initialized`);
+		if (this.tuner.getGains) {
+			const gains = this.tuner.getGains();
+			if (gains.length > 0) {
+				this.gainControls[0] = {
+					name: 'Tuner',
+					min: 0,
+					max: gains.length - 1,
+					step: 1,
+					default: Math.min(Math.floor(gains.length / 2), gains.length - 1),
+					options: gains,
+					type: 'slider'
+				};
+			}
+		}
 		await this.tuner.setAutoGain();
 		await this.com.closeI2C();
 		console.log('RTL-SDR: device ready');
@@ -1785,39 +1842,55 @@ export class RtlSdrDevice implements SdrDevice {
 	}
 
 	async setSampleRate(rate: number): Promise<void> {
-		return this.withUsbLock(async () => {
-			console.log('RTL-SDR: setSampleRate', rate);
-			// Cancel any active bulk transfers before reconfiguring the demod.
+		return await this.withUsbLock(async () => {
 			await this.pauseRx();
-			const xtalFreq = Math.floor(XTAL_FREQ * (1 + this.ppm / 1000000));
-			let ratio = Math.floor(xtalFreq * (1 << 22) / rate);
-			ratio &= 0x0ffffffc;
-			const ppmOffset = -1 * Math.floor(this.ppm * (1 << 24) / 1000000);
-			await this.com.writeDemodReg(1, 0x9f, (ratio >> 24) & 0xff, 1);
-			await this.com.writeDemodReg(1, 0xa0, (ratio >> 16) & 0xff, 1);
-			await this.com.writeDemodReg(1, 0xa1, (ratio >> 8) & 0xff, 1);
-			await this.com.writeDemodReg(1, 0xa2, ratio & 0xff, 1);
-			await this.com.writeDemodReg(1, 0x3e, (ppmOffset >> 8) & 0x3f, 1);
-			await this.com.writeDemodReg(1, 0x3f, ppmOffset & 0xff, 1);
-			await this.com.writeDemodReg(1, 0x01, 0x14, 1);
-			await this.com.writeDemodReg(1, 0x01, 0x10, 1);
-			console.log('RTL-SDR: setSampleRate complete');
+			try {
+				// Flush the Endpoint buffer since pauseRx() stopped bulk polling 
+				// and the FIFO rapidly overrun, wedging the ASIC.
+				await this.com.writeReg(BLOCK.USB, REG.EPA_CTL, 0x0210, 2);
+				await this.com.writeReg(BLOCK.USB, REG.EPA_CTL, 0x0000, 2);
+
+				console.log('RTL-SDR: setSampleRate', rate);
+				const xtalFreq = Math.floor(XTAL_FREQ * (1 + this.ppm / 1000000));
+				let ratio = Math.floor(xtalFreq * (1 << 22) / rate);
+				ratio &= 0x0ffffffc;
+				const ppmOffset = -1 * Math.floor(this.ppm * (1 << 24) / 1000000);
+				await this.com.writeDemodReg(1, 0x9f, (ratio >> 24) & 0xff, 1);
+				await this.com.writeDemodReg(1, 0xa0, (ratio >> 16) & 0xff, 1);
+				await this.com.writeDemodReg(1, 0xa1, (ratio >> 8) & 0xff, 1);
+				await this.com.writeDemodReg(1, 0xa2, ratio & 0xff, 1);
+				await this.com.writeDemodReg(1, 0x3e, (ppmOffset >> 8) & 0x3f, 1);
+				await this.com.writeDemodReg(1, 0x3f, ppmOffset & 0xff, 1);
+				await this.com.writeDemodReg(1, 0x01, 0x14, 1);
+				await this.com.writeDemodReg(1, 0x01, 0x10, 1);
+				console.log('RTL-SDR: setSampleRate complete');
+			} finally {
+				this.resumeRx();
+			}
 		});
 	}
 
 	async setFrequency(freqHz: number): Promise<void> {
-		return this.withUsbLock(async () => {
-			console.log('RTL-SDR: setFrequency', freqHz);
+		return await this.withUsbLock(async () => {
 			await this.pauseRx();
 			try {
-				// FC0012 requires GPIO6 toggle for V-band (>300MHz) vs U-band filter
+				await this.com.writeReg(BLOCK.USB, REG.EPA_CTL, 0x0210, 2);
+				await this.com.writeReg(BLOCK.USB, REG.EPA_CTL, 0x0000, 2);
+
+				// For zero-IF tuners: re-apply demod reset cycle that setSampleRate
+				// normally does. Without this, the demod's internal state (DC offset
+				// tracking, I/Q balance) can be stale after the EPA flush, causing
+				// the tuner to appear locked to the old frequency.
+				if (!this.hasIfFreq) {
+					await this.com.writeDemodReg(1, 0x01, 0x14, 1);
+					await this.com.writeDemodReg(1, 0x01, 0x10, 1);
+				}
+
+				console.log('RTL-SDR: setFrequency', freqHz);
 				if (this.tunerName.startsWith('FC0012')) {
 					await this.setGpioBit(6, freqHz > 300000000);
 				}
 				await this.com.openI2C();
-				// R820T/R828D: the R820T class expects the raw user frequency.
-				// The IF offset is applied internally in the RTL2832U demod registers
-				// (set during open() at lines 1562–1567). Do NOT double-offset here.
 				await this.tuner.setFrequency(freqHz);
 				await this.com.closeI2C();
 			} finally {
@@ -1827,19 +1900,24 @@ export class RtlSdrDevice implements SdrDevice {
 	}
 
 	async setGain(name: string, value: number): Promise<void> {
-		return this.withUsbLock(async () => {
+		return await this.setGains({ [name]: value });
+	}
+
+	async setGains(gains: Record<string, number>): Promise<void> {
+		if (!this.tuner) return;
+		return await this.withUsbLock(async () => {
 			await this.pauseRx();
 			try {
-				if (name === 'Tuner') {
+				await this.com.writeReg(BLOCK.USB, REG.EPA_CTL, 0x0210, 2);
+				await this.com.writeReg(BLOCK.USB, REG.EPA_CTL, 0x0000, 2);
+
+				if ('Tuner' in gains) {
 					await this.com.openI2C();
-					if (value <= 0) {
-						await this.tuner.setAutoGain();
-					} else {
-						await this.tuner.setManualGain(value);
-					}
+					await this.tuner.setManualGain(gains['Tuner']);
 					await this.com.closeI2C();
-				} else if (name === 'Bias-T') {
-					await this.setBiasTee(!!value);
+				}
+				if ('Bias-T' in gains) {
+					await this.setBiasTee(!!gains['Bias-T']);
 				}
 			} finally {
 				this.resumeRx();
@@ -1847,12 +1925,8 @@ export class RtlSdrDevice implements SdrDevice {
 		});
 	}
 
-	/**
-	 * Stop bulk transfer loops so control transfers can proceed.
-	 * Sets rxRunning to null and waits for the loops to finish their
-	 * current readBulk call naturally — no releaseInterface needed.
-	 * At 2.88 Msps with 64K transfers, each loop drains in ~11ms.
-	 */
+
+
 	private async pauseRx(): Promise<void> {
 		if (!this.rxRunning) return;
 		const promises = this.rxRunning;
@@ -1866,10 +1940,14 @@ export class RtlSdrDevice implements SdrDevice {
 		} catch (_) { /* ignore */ }
 	}
 
-	/** Restart bulk transfer loops after pauseRx, without resetting the endpoint. */
+	/** Restart bulk transfer loops after pauseRx. */
 	private resumeRx(): void {
 		if (!this.rxCallback || this.rxRunning) return;
-		this.launchBulkLoops(this.rxCallback);
+		// Restart bulk loops in the background. This will implicitly use withUsbLock
+		// to safely flush the EPA_CTL buffers and clear the WinUSB lockup from pauseRx().
+		this.startRx(this.rxCallback).catch(err => {
+			console.error('RTL-SDR: Failed to resume Rx:', err);
+		});
 	}
 
 	private async setGpioOutput(gpioNum: number): Promise<void> {
@@ -1903,14 +1981,16 @@ export class RtlSdrDevice implements SdrDevice {
 	}
 
 	async startRx(callback: (data: ArrayBufferView) => void): Promise<void> {
-		if (this.rxRunning) await this.stopRx();
-		this.rxCallback = callback;
+		return this.withUsbLock(async () => {
+			if (this.rxRunning) await this.stopRx();
+			this.rxCallback = callback;
 
-		// Reset USB buffer
-		await this.com.writeReg(BLOCK.USB, REG.EPA_CTL, 0x0210, 2);
-		await this.com.writeReg(BLOCK.USB, REG.EPA_CTL, 0x0000, 2);
+			// Reset USB buffer (matches librtlsdr rtlsdr_reset_buffer)
+			await this.com.writeReg(BLOCK.USB, REG.EPA_CTL, 0x0210, 2);
+			await this.com.writeReg(BLOCK.USB, REG.EPA_CTL, 0x0000, 2);
 
-		this.launchBulkLoops(callback);
+			this.launchBulkLoops(callback);
+		});
 	}
 
 	private launchBulkLoops(callback: (data: ArrayBufferView) => void): void {

@@ -58,7 +58,8 @@ createApp({
 		this.backend = await new (Backend as any)();
 		await this.backend.init();
 
-		this.$watch('radio', async (newVal: any, oldVal: any) => {
+		let freqDebounce: ReturnType<typeof setTimeout> | null = null;
+		this.$watch(() => this.radio.centerFreq, async (newVal: any, oldVal: any) => {
 			this.saveSetting();
 			// Reset zoom on radio change
 			this.view.zoomScale = 1.0;
@@ -67,47 +68,81 @@ createApp({
 
 			if (this.remoteMode === 'client') {
 				if (!this._applyingSync) {
-					this._webrtc.sendCommand({ type: 'requestChange', target: 'radio', property: 'centerFreq', value: this.radio.centerFreq });
-					this._webrtc.sendCommand({ type: 'requestChange', target: 'radio', property: 'sampleRate', value: this.radio.sampleRate });
+					this._webrtc.sendCommand({ type: 'requestChange', target: 'radio', property: 'centerFreq', value: newVal });
 				}
 				return;
 			}
 
-			if (this.running) {
-				await this.togglePlay();
-				await this.togglePlay(true);
-			}
+			// Debounce: wait for the input to settle before sending USB commands.
+			// Typing "106" fires intermediate values (1, 10, 106) — each triggers a
+			// full pauseRx/VCO-cal/resumeRx cycle that can leave the FC0012 PLL in a
+			// bad state if changes arrive too fast.
+			if (freqDebounce) clearTimeout(freqDebounce);
+			freqDebounce = setTimeout(() => {
+				freqDebounce = null;
 
-			// Broadcast updated radio settings to all remote clients
-			if (this.remoteMode === 'host' && this._webrtc) {
-				this._webrtc.sendCommand({ type: 'sync', radio: this.radio, gains: this.gains, locks: this.locks });
-			}
-		}, { deep: true });
+				if (this.running && this.backend) {
+					this.backend.setFrequency(newVal * 1e6).catch(console.error);
+				}
 
-		this.$watch('gains', () => {
+				if (this.remoteMode === 'host' && this._webrtc) {
+					this._webrtc.sendCommand({ type: 'sync', radio: this.radio, gains: this.gains, locks: this.locks });
+				}
+			}, 200);
+		});
+
+		this.$watch(() => [this.radio.sampleRate, this.radio.fftSize], async (newVals: any[], oldVals: any[]) => {
+			this.saveSetting();
+			this.view.zoomScale = 1.0;
+			this.view.zoomOffset = 0.0;
+			this.applyZoomToEngine();
+
 			if (this.remoteMode === 'client') {
 				if (!this._applyingSync) {
-					// Send all gain values generically
-					for (const [name, value] of Object.entries(this.gains)) {
-						this._webrtc.sendCommand({ type: 'requestChange', target: 'gains', property: name, value });
+					if (newVals[0] !== oldVals[0]) {
+						this._webrtc.sendCommand({ type: 'requestChange', target: 'radio', property: 'sampleRate', value: newVals[0] });
 					}
 				}
 				return;
 			}
 
-			if (this.running && this.connected && this.backend) {
-				// Apply all gains generically via the device-agnostic API
-				for (const [name, value] of Object.entries(this.gains)) {
-					this.backend.setGain(name, value as number);
-				}
+			if (this.running && (newVals[0] !== oldVals[0] || newVals[1] !== oldVals[1])) {
+				await this.togglePlay();
+				await this.togglePlay(true);
 			}
 
-			// Broadcast updated gains to all remote clients
 			if (this.remoteMode === 'host' && this._webrtc) {
-				this._webrtc.sendCommand({ type: 'sync', gains: this.gains, locks: this.locks });
+				this._webrtc.sendCommand({ type: 'sync', radio: this.radio, gains: this.gains, locks: this.locks });
 			}
+		}, { deep: true });
 
-			this.saveSetting();
+		let gainDebounce: ReturnType<typeof setTimeout> | null = null;
+		this.$watch('gains', () => {
+			// Debounce: wait for slider to settle before sending USB commands.
+			// Dragging fires many intermediate values — only the final one matters.
+			if (gainDebounce) clearTimeout(gainDebounce);
+			gainDebounce = setTimeout(() => {
+				gainDebounce = null;
+
+				if (this.remoteMode === 'client') {
+					if (!this._applyingSync) {
+						for (const [name, value] of Object.entries(this.gains)) {
+							this._webrtc.sendCommand({ type: 'requestChange', target: 'gains', property: name, value });
+						}
+					}
+					return;
+				}
+
+				if (this.running && this.connected && this.backend) {
+					this.backend.setGains({ ...this.gains }).catch(console.error);
+				}
+
+				if (this.remoteMode === 'host' && this._webrtc) {
+					this._webrtc.sendCommand({ type: 'sync', gains: this.gains, locks: this.locks });
+				}
+
+				this.saveSetting();
+			}, 100);
 		}, { deep: true });
 
 		this.$watch('vfos', () => {

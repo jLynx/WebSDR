@@ -24,6 +24,7 @@ export interface GainControl {
 	max: number;
 	step: number;
 	default: number;
+	options?: number[];
 	type: 'slider' | 'checkbox';
 }
 
@@ -46,6 +47,7 @@ export interface SdrDevice {
 	setSampleRate(rate: number): Promise<void>;
 	setFrequency(freqHz: number): Promise<void>;
 	setGain(name: string, value: number): Promise<void>;
+	setGains?(gains: Record<string, number>): Promise<void>;
 	setBandwidth?(bwHz: number): Promise<void>;
 
 	startRx(callback: (data: ArrayBufferView) => void): Promise<void>;
