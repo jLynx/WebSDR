@@ -86,7 +86,8 @@ const REG_RXTSP_CFG     = 0x0400;  // EN_RXTSP, etc.
 const REG_RXTSP_BYPASS  = 0x040C;  // GC_BYP, PH_BYP, DC_BYP, etc.
 
 // LML (LimeLight interface)
-const REG_LML_CFG0      = 0x0023;  // RXEN_A, RXEN_B, TXEN_A, TXEN_B
+// Note: RXEN_A/B, TXEN_A/B are in register 0x0020 (bits 4,5,2,3), NOT 0x0023
+const REG_LML_CFG0      = 0x0020;  // RXEN_A[4], RXEN_B[5], TXEN_A[2], TXEN_B[3]
 
 // FPGA registers (accessed via CMD_BRDSPI_WR/RD)
 const FPGA_REG_CTRL     = 0x000A;  // RX_EN (bit 0), TX_EN (bit 1)
@@ -491,8 +492,8 @@ class LMS7002M {
 		// Register 0x0082: EN_G_AFE=1, PD_TX_AFE1=1, others 0 (PD_RX_AFE1=0 meaning ON)
 		await this.proto.spiWriteReg(REG_AFE_CFG, 0x8001);
 
-		// Enable LML: RXEN_A=1
-		await this.proto.spiModifyReg(REG_LML_CFG0, 0x0001, 0x0001);
+		// Enable LML: RXEN_A=1 (bit 4 of register 0x0020)
+		await this.proto.spiModifyReg(REG_LML_CFG0, 0x0010, 0x0010);
 
 		// Enable RFE
 		const rfe = await this.proto.spiReadReg(REG_RFE_CFG1);
@@ -881,13 +882,9 @@ export class LimeSDRDevice implements SdrDevice {
 		console.log('LimeSDR: resetting USB FIFOs...');
 		await this.proto.resetUSBFIFO(0x01);
 
-		// Configure LMS1 control pins (FPGA register 0x0013 = fpgacfg mem(19))
-		// Default has TXNRX1=1 (Port 1 = TX input), TXNRX2=0 (Port 2 = RX output)
-		// We need TXNRX1=0 (Port 1 = RX output, LMS drives data) since FPGA reads Port 1
-		const lmsCtrl = await this.proto.fpgaRead(0x0013);
-		const newLmsCtrl = (lmsCtrl & ~(1 << 3)) | (1 << 4);  // TXNRX1=0, TXNRX2=1
-		await this.proto.fpgaWrite(0x0013, newLmsCtrl);
-		console.log(`LimeSDR: LMS1 ctrl pins: 0x${lmsCtrl.toString(16)} → 0x${newLmsCtrl.toString(16)}`);
+		// FPGA register 0x0013 (LMS1 control pins) defaults are CORRECT:
+		// TXNRX1=1 (Port 1/DIQ1 = TX input to LMS), TXNRX2=0 (Port 2/DIQ2 = RX output from LMS)
+		// In gateware: DIQ2 → lms7002_ddin (FPGA RX input), DIQ1 → lms7002_ddout (FPGA TX output)
 
 		// Reset and initialize
 		console.log('LimeSDR: resetting LMS7002M...');
@@ -898,36 +895,51 @@ export class LimeSDRDevice implements SdrDevice {
 		await this.lms.initRxChannelA();
 
 		// Configure LML (LimeLight) interface registers
-		// These match LimeSuite's SetInterfaceFreq initialization values
-		await this.proto.spiWriteReg(0x0021, 0x0E9F);  // LML1 config
-		await this.proto.spiWriteReg(0x0022, 0x1FFF);  // LML2 config: bit12=LML1_SISODDR for single-ch
-		// 0x0023: LML control — default 0x5559
-		// LML1_TXNRXIQ=0 (bit 1): RXTSP output on Port 1 (RX data → FPGA)
-		// LML2_TXNRXIQ=1 (bit 4): TXTSP input on Port 2 (TX data ← FPGA)
-		// MOD_EN=1 (bit 6), ENABLEDIR1/2=1, DIQDIR1/2=1, LML_MODE=1
-		await this.proto.spiWriteReg(0x0023, 0x5559);
-		await this.proto.spiWriteReg(0x0024, 0xE4E4);  // LML1 position mapping
-		await this.proto.spiWriteReg(0x0027, 0xE4E4);  // LML2 position mapping
+		// Values matched to LimeSuite LMS7_Device::Init() defaults
+
+		// 0x0021: Pad pull-ups and SPI mode (4-wire)
+		await this.proto.spiWriteReg(0x0021, 0x0E9F);
+
+		// 0x0022: DIQ pad control. NO SISODDR (bit 12=0, bit 14=0) — use standard MIMO interface
+		// LimeSuite Init: 0x0FFF
+		await this.proto.spiWriteReg(0x0022, 0x0FFF);
+
+		// 0x0023: LML direction/mode/routing — CRITICAL register!
+		// LimeSuite Init: 0x5550
+		// Bit 0:  LML1_MODE=0 (TRXIQ, NOT JESD207!)
+		// Bit 1:  LML1_TXNRXIQ=0 (Port 1 carries RXIQ data)
+		// Bit 3:  LML2_MODE=0 (TRXIQ, NOT JESD207!)
+		// Bit 4:  LML2_TXNRXIQ=1 (Port 2 carries TXIQ data)
+		// Bit 6:  MOD_EN=1 (LimeLight enabled)
+		// Bits 8,10: ENABLEDIR1/2=1, Bits 12,14: DIQDIR1/2=1 (all auto-direction)
+		await this.proto.spiWriteReg(0x0023, 0x5550);
+
+		// 0x0024, 0x0027: Sample position mapping (default: AI=0, AQ=1, BI=2, BQ=3)
+		await this.proto.spiWriteReg(0x0024, 0xE4E4);
+		await this.proto.spiWriteReg(0x0027, 0xE4E4);
+
 		// Set RXTSP decimation to bypass (HBD_OVR_RXTSP = 7 means bypass)
-		// Register 0x0403 bits [14:12]
 		await this.proto.spiModifyReg(0x0403, 0x7000, 0x7000);
 
-		// Register 0x002A: FIFO clock routing — critical for data flow
-		// LMS7002M-driver enum values:
-		// TXRDCLK_MUX[7:6] = 2 (TXTSPCLK)
-		// TXWRCLK_MUX[5:4] = 0 (FCLK1)
-		// RXRDCLK_MUX[3:2] = 1 (FCLK2)
-		// RXWRCLK_MUX[1:0] = 2 (RXTSPCLK)
-		// 0x0086 configures these clocks correctly to avoid a starved LML FIFO!
+		// 0x002A: FIFO clock mux routing
+		// TXRDCLK_MUX[7:6]=2 (TXTSPCLK), TXWRCLK_MUX[5:4]=0 (FCLK1)
+		// RXRDCLK_MUX[3:2]=1 (FCLK2), RXWRCLK_MUX[1:0]=2 (RXTSPCLK)
+		// RX_MUX[11:10]=0 (RxTSP), TX_MUX[9:8]=0 (Port1)
 		await this.proto.spiWriteReg(0x002A, 0x0086);
-		// Enable RXTSP and TXTSP (clock generators need both for MCLK outputs)
-		// Use modify-reg to only set EN bit without corrupting other fields
+
+		// Enable RXTSP and TXTSP (needed for MCLK clock generation)
 		await this.proto.spiModifyReg(0x0400, 0x0001, 0x0001); // EN_RXTSP=1
 		await this.proto.spiModifyReg(0x0200, 0x0001, 0x0001); // EN_TXTSP=1
-		// Register 0x002B: MCLK1SRC[2:1]=2 (TXTSPCLKA)
-		await this.proto.spiWriteReg(0x002B, 0x0004);
-		// Register 0x002C: MCLK2SRC[2:1]=3 (RXTSPCLKA)
-		await this.proto.spiWriteReg(0x002C, 0x0006);
+
+		// 0x002B: MCLK source configuration — BOTH sources are in this register!
+		// LimeSuite Init: 0x0038
+		// MCLK1SRC[3:2]=2 (TXTSPCLKA_DIV) — TX clock for Port 1/DIQ1
+		// MCLK2SRC[5:4]=3 (RXTSPCLKA_DIV) — RX clock for Port 2/DIQ2
+		// Previous code had these SWAPPED and split across two registers!
+		await this.proto.spiWriteReg(0x002B, 0x0038);
+
+		// 0x002C: TSP clock dividers (LimeSuite Init: 0x0000)
+		await this.proto.spiWriteReg(0x002C, 0x0000);
 
 		// Debug: read back LML registers to verify
 		const lmlRegs = await this.proto.spiRead([0x0020, 0x0021, 0x0022, 0x0023, 0x0024, 0x0027, 0x002A, 0x002B, 0x002C]);
@@ -948,18 +960,18 @@ export class LimeSDRDevice implements SdrDevice {
 		// Configure FPGA for RX streaming
 		console.log('LimeSDR: configuring FPGA...');
 
-		// Note: LimeSuite dynamically shifts phase based on frequency (txRate/rxRate)
-		// At 30 MHz, Phase shift is essential to latch the LML bits accurately.
+		// Phase alignment for DDR data capture — LimeSuite formula (non-search path)
+		// Only clock 1 of each PLL gets a phase shift (clock 0 = reference, clock 1 = data latch)
 		const rxPhase = 89.46 + 1.24e-6 * this.currentSampleRate;
-		const txPhase = 89.46 + 1.24e-6 * this.currentSampleRate;
+		const txPhase = 89.61 + 2.71e-7 * this.currentSampleRate;
 
-		// Configure FPGA TX PLL at Sample Rate
+		// Configure FPGA TX PLL (index 0)
 		console.log(`LimeSDR: configuring FPGA TX PLL at ${(this.currentSampleRate / 1e6).toFixed(2)} MHz...`);
-		await this.proto.fpgaSetPllFrequency(0, this.currentSampleRate, [this.currentSampleRate, this.currentSampleRate], [txPhase, txPhase]);
+		await this.proto.fpgaSetPllFrequency(0, this.currentSampleRate, [this.currentSampleRate, this.currentSampleRate], [0, txPhase]);
 
-		// Configure FPGA RX PLL at Sample Rate
+		// Configure FPGA RX PLL (index 1)
 		console.log(`LimeSDR: configuring FPGA RX PLL at ${(this.currentSampleRate / 1e6).toFixed(2)} MHz...`);
-		await this.proto.fpgaSetPllFrequency(1, this.currentSampleRate, [this.currentSampleRate, this.currentSampleRate], [rxPhase, rxPhase]);
+		await this.proto.fpgaSetPllFrequency(1, this.currentSampleRate, [this.currentSampleRate, this.currentSampleRate], [0, rxPhase]);
 
 		// Select chip 0 — register 0xFFFF selects which chip to configure
 		await this.proto.fpgaWrite(0xFFFF, 1 << 0);  // chipId=0
@@ -999,9 +1011,13 @@ export class LimeSDRDevice implements SdrDevice {
 		this.currentSampleRate = rate;
 		// CGEN = sampleRate (no oversampling, RXTSP decimation bypassed)
 		await this.lms.setCGENFrequency(rate);
-		// Reconfigure both FPGA PLLs to match new rate
-		await this.proto.fpgaSetPllFrequency(0, rate, [rate, rate]);
-		await this.proto.fpgaSetPllFrequency(1, rate, [rate, rate]);
+		// Reconfigure both FPGA PLLs to match new rate WITH phase alignment
+		// Phase formula from LimeSuite SetInterfaceFreq (non-search path):
+		// Only Clock 1 of each PLL needs phase shift for DDR data capture
+		const rxPhase = 89.46 + 1.24e-6 * rate;
+		const txPhase = 89.61 + 2.71e-7 * rate;
+		await this.proto.fpgaSetPllFrequency(0, rate, [rate, rate], [0, txPhase]);
+		await this.proto.fpgaSetPllFrequency(1, rate, [rate, rate], [0, rxPhase]);
 	}
 
 	async setFrequency(freqHz: number): Promise<void> {
@@ -1044,10 +1060,9 @@ export class LimeSDRDevice implements SdrDevice {
 		await this.proto.resetUSBFIFO(0x00);
 
 		// Set interface mode — MUST match LMS7002M LML1_SISODDR setting!
-		// We set LML1_SISODDR=1 (reg 0x0022 bit 12) → FPGA must use SISO DDR mode (0x0040)
-		// LimeSuite checks: if SISODDR → mode=0x0040, else mode=0x0100 (MIMO)
+		// LML1_SISODDR=0 (reg 0x0022) → FPGA uses MIMO mode (0x0100)
 		// smpl_width[1:0]=00 for 16-bit samples
-		await this.proto.fpgaWrite(0x0008, 0x0040);
+		await this.proto.fpgaWrite(0x0008, 0x0100);
 
 		// Enable channel A (Single channel mode)
 		await this.proto.fpgaWrite(0x0007, 0x0001);
@@ -1076,17 +1091,30 @@ export class LimeSDRDevice implements SdrDevice {
 			console.log(`LimeSDR: FPGA reg 0x${addr.toString(16).padStart(4, '0')} = 0x${val.toString(16).padStart(4, '0')}`);
 		}
 
-		// Diagnostic: try a single transfer with timeout to check if endpoint responds
-		const epNum = STREAM_BULK_IN & 0x7F;  // endpoint number = 1
+		// Diagnostic: dump critical register state before attempting transfer
+		console.log('LimeSDR: === PRE-TRANSFER DIAGNOSTICS ===');
+		// LMS7002M registers (max 14 per spiRead due to 64-byte LMS64C packet limit)
+		const diagBatch1 = await this.proto.spiRead([0x0020, 0x0022, 0x0023, 0x002A, 0x002B, 0x002C, 0x002E]);
+		const names1 = ['MAC/EN', 'SISODDR', 'LML_DIR', 'CLK_MUX', 'MCLK', 'TSP_DIV', 'MIMO'];
+		const addrs1 = [0x0020, 0x0022, 0x0023, 0x002A, 0x002B, 0x002C, 0x002E];
+		console.log('LimeSDR: LMS[1]: ' + diagBatch1.map((v, i) =>
+			`${names1[i]}(${addrs1[i].toString(16)})=0x${v.toString(16).padStart(4, '0')}`).join(' '));
+		const diagBatch2 = await this.proto.spiRead([0x0082, 0x0400, 0x0200, 0x010C, 0x010D, 0x0115, 0x011C]);
+		const names2 = ['AFE', 'RXTSP', 'TXTSP', 'RFE1', 'RFE2', 'RBB', 'SX_CFG'];
+		const addrs2 = [0x0082, 0x0400, 0x0200, 0x010C, 0x010D, 0x0115, 0x011C];
+		console.log('LimeSDR: LMS[2]: ' + diagBatch2.map((v, i) =>
+			`${names2[i]}(${addrs2[i].toString(16)})=0x${v.toString(16).padStart(4, '0')}`).join(' '));
 
-		// VERY IMPORTANT FOR WINDOWS: The hardware FIFO reset resets the device's
-		// USB DATA0/DATA1 toggle. If we don't clear the host's halt state, 
-		// the toggles desync and WinUSB silently drops all valid incoming packets!
-		try {
-			await (this.dev as any).clearHalt('in', epNum);
-		} catch (e) {
-			console.warn(`LimeSDR: clearHalt on EP ${epNum} failed:`, e);
-		}
+		// FPGA registers (including 0x0013 for TXNRX pin state)
+		const diagFpga = [0x0003, 0x0005, 0x0007, 0x0008, 0x0009, 0x000A, 0x0013, 0xFFFF];
+		const fpgaVals: number[] = [];
+		for (const a of diagFpga) fpgaVals.push(await this.proto.fpgaRead(a));
+		console.log('LimeSDR: FPGA: ' + fpgaVals.map((v, i) =>
+			`0x${diagFpga[i].toString(16).padStart(4, '0')}=0x${v.toString(16).padStart(4, '0')}`).join(' '));
+		console.log('LimeSDR: === END DIAGNOSTICS ===');
+
+		// Try transfer on EP 1 (stream endpoint)
+		const epNum = STREAM_BULK_IN & 0x7F;  // endpoint number = 1
 
 		console.log(`LimeSDR: attempting test transferIn on EP ${epNum}...`);
 		try {
@@ -1128,47 +1156,23 @@ export class LimeSDRDevice implements SdrDevice {
 						transferCount++;
 					}
 
-					// LimeSDR USB packet format: 16-byte header + IQ samples
-					// Header bytes 1 and 2 contain the payload size
-					const int8Data = new Int8Array(Math.floor(raw.length / 2));
+					// LimeSDR USB: fixed 4096-byte packets, 16-byte header + 4080 bytes payload
+					// Payload = 2040 int16 samples (1020 complex IQ pairs)
+					// Use DataView for unaligned int16 reads
+					const PACKET_SZ = 4096;
+					const HDR_SZ = 16;
+					const numPackets = Math.floor(raw.length / PACKET_SZ);
+					const samplesPerPacket = (PACKET_SZ - HDR_SZ) / 2;  // 2040
+					const int8Data = new Int8Array(numPackets * samplesPerPacket);
 					let outIdx = 0;
-					let offset = 0;
 
-					while (offset + 16 <= raw.length) {
-						const payloadSize = raw[offset + 1] | (raw[offset + 2] << 8);
-						const packetSize = 16 + payloadSize;
+					const dv = new DataView(raw.buffer, raw.byteOffset, raw.byteLength);
 
-						// Fallback if payload size is zero or clearly invalid (e.g. padding at end of buffer)
-						if (payloadSize === 0 || offset + packetSize > raw.length) {
-							// For LimeSDR USB, packets are almost always 4096 bytes long
-							// Fallback to 4096 if the header seems corrupted
-							if (offset + 4096 <= raw.length) {
-								const payload = raw.subarray(offset + 16, offset + 4096);
-								const int16View = new Int16Array(
-									payload.buffer, payload.byteOffset,
-									Math.floor(payload.byteLength / 2)
-								);
-								for (let i = 0; i < int16View.length; i++) {
-									int8Data[outIdx++] = int16View[i] >> 4;
-								}
-								offset += 4096;
-								continue;
-							} else {
-								break;
-							}
+					for (let pkt = 0; pkt < numPackets; pkt++) {
+						const base = pkt * PACKET_SZ + HDR_SZ;
+						for (let i = 0; i < samplesPerPacket; i++) {
+							int8Data[outIdx++] = dv.getInt16(base + i * 2, true) >> 4;
 						}
-
-						const payload = raw.subarray(offset + 16, offset + packetSize);
-						const int16View = new Int16Array(
-							payload.buffer, payload.byteOffset,
-							Math.floor(payload.byteLength / 2)
-						);
-
-						for (let i = 0; i < int16View.length; i++) {
-							int8Data[outIdx++] = int16View[i] >> 4;
-						}
-
-						offset += packetSize;
 					}
 
 					if (outIdx > 0) {
