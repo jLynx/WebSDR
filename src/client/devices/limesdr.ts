@@ -1046,9 +1046,9 @@ export class LimeSDRDevice implements SdrDevice {
 		await this.proto.spiWriteReg(0x0020, reg20 | 0x0380);   // Set them back (not in reset)
 
 		// Set default sample rate (CGEN)
-		// CGEN = sampleRate since RXTSP decimation is bypassed (no oversampling)
+		// LimeSuite bypass mode: CGEN = sampleRate × 4 (ADC = CGEN/4 = sampleRate)
 		console.log('LimeSDR: setting CGEN frequency...');
-		await this.lms.setCGENFrequency(this.currentSampleRate);
+		await this.lms.setCGENFrequency(this.currentSampleRate * 4);
 
 		// Configure FPGA for RX streaming
 		console.log('LimeSDR: configuring FPGA...');
@@ -1102,11 +1102,15 @@ export class LimeSDRDevice implements SdrDevice {
 
 	async setSampleRate(rate: number): Promise<void> {
 		this.currentSampleRate = rate;
-		// CGEN = sampleRate (no oversampling, RXTSP decimation bypassed)
-		await this.lms.setCGENFrequency(rate);
+		// LimeSuite bypass mode: CGEN = sampleRate × 4
+		// With default EN_ADCCLKH_CLKGN=1, CLKH_OV_CLKL_CGEN=0:
+		//   RX TSP ref = clklfreq/4 = (CGEN/1)/4 = CGEN/4 = sampleRate
+		await this.lms.setCGENFrequency(rate * 4);
+
 		// Reconfigure analog filter bandwidth to match new sample rate
 		await this.lms.setAnalogBandwidth(rate);
 		// Reconfigure both FPGA PLLs to match new rate WITH phase alignment
+		// MCLK2 = CGEN/4 = rate, so FPGA PLL reference = rate
 		// Phase formula from LimeSuite SetInterfaceFreq (non-search path):
 		// Only Clock 1 of each PLL needs phase shift for DDR data capture
 		const rxPhase = 89.46 + 1.24e-6 * rate;
