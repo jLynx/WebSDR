@@ -73,18 +73,18 @@ export async function startRxStream(
 
 		const iqBuffer = new Int8Array(fftSize * 2);
 		let iqBufferPos = 0;
-		let spectrumThrottle = 0;
 		const targetFftFps = 20;
-		const possibleFftFps = sampleRate / fftSize;
-		const fftSkipFrames = Math.max(1, Math.round(possibleFftFps / targetFftFps));
+		const spectrumIntervalMs = 1000 / targetFftFps;  // 50ms for 20fps
+		let lastSpectrumTime = 0;
 
 		// ── Audio DDC setup ───────────────────────────────────────────
 		// Full SDR++ pipeline in Rust: NCO → polyphase resampler (→50kHz)
 		// → channel FIR → squelch → FM demod → post-demod FIR → audio resampler (→48kHz)
 		const initialBandwidth = 150000;
 
-		// Free any existing DDCs
+		// Free any existing DDCs and timers
 		if (backend.ddcs) backend.ddcs.forEach((d: any) => { try { d.free(); } catch (_) { } });
+		if (backend._perfInterval) { clearInterval(backend._perfInterval); backend._perfInterval = undefined; }
 
 		// Initialize dynamic VFO arrays (start with one VFO)
 		const defaultVfoParams: VfoParams = { freq: centerFreq, mode: 'wfm', enabled: false, deEmphasis: '50us', squelchEnabled: false, squelchLevel: -100.0, lowPass: true, highPass: false, bandwidth: initialBandwidth, volume: 50, pocsag: false };
@@ -538,10 +538,11 @@ export async function startRxStream(
 				}
 			}
 
-			// Mixer block logic
+			// Mixer: flush all available audio immediately on every DSP callback.
+			// Low-callback-rate devices (LimeSDR ~18/s) produce large audio bursts
+			// that the main thread's ring buffer + schedule system smooths out.
 			let anyActive = false;
 			let minAvailable = Infinity;
-			const AUDIO_BATCH_THRESHOLD_MIXER = 512;
 			const activeStates: VfoState[] = [];
 			const activeParams: VfoParams[] = [];
 
@@ -558,7 +559,9 @@ export async function startRxStream(
 				}
 			}
 
-			if (anyActive && minAvailable > 0 && minAvailable !== Infinity && minAvailable >= AUDIO_BATCH_THRESHOLD_MIXER) {
+			// Flush with no minimum threshold — let the main thread's audio ring
+			// buffer handle the smoothing via _scheduleAudioChunk
+			if (anyActive && minAvailable > 0 && minAvailable !== Infinity) {
 				if (!backend._mixBuf || backend._mixBuf.length < minAvailable) {
 					backend._mixBuf = new Float32Array(minAvailable + 1024);
 				}
@@ -589,9 +592,6 @@ export async function startRxStream(
 				}
 
 				if (audioCallback) audioCallback(mixed.subarray(0, minAvailable));
-				// Remote client audio is now handled exclusively by _remoteVfoWorker
-				// (spawned by setRemoteVfoParams). DO NOT send the host mixer output
-				// here — that would couple the client's audio to the host's VFO state.
 			}
 		};
 		// Expose for worker closure inside spawnWorker
@@ -628,8 +628,9 @@ export async function startRxStream(
 					srcOff += toCopy;
 					if (iqBufferPos >= iqBuffer.length) {
 						iqBufferPos = 0;
-						spectrumThrottle++;
-						if (spectrumThrottle % fftSkipFrames === 0) {
+						const now = performance.now();
+						if (now - lastSpectrumTime >= spectrumIntervalMs) {
+							lastSpectrumTime = now;
 							// Revert back to copy-based FFT for the spectrum waterfall
 							// because `iqBuffer` batches data across USB chunk boundaries.
 							spectrumFft.fft(iqBuffer, spectrumOutput);
