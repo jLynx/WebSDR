@@ -105,7 +105,8 @@ const CGEN_VCO_MAX = 2940e6;
 // Reference clock (default for LimeSDR USB)
 const REF_CLK = 30.72e6;
 
-const TRANSFER_BUFFER_SIZE = 65536;
+// Match HackRF's 256KB transfer size for fewer callbacks and better USB batching
+const TRANSFER_BUFFER_SIZE = 262144;
 
 // ── LMS64C Protocol Layer ────────────────────────────────────────
 
@@ -495,27 +496,46 @@ class LMS7002M {
 		// Enable LML: RXEN_A=1 (bit 4 of register 0x0020)
 		await this.proto.spiModifyReg(REG_LML_CFG0, 0x0010, 0x0010);
 
-		// Enable RFE
-		const rfe = await this.proto.spiReadReg(REG_RFE_CFG1);
-		await this.proto.spiWriteReg(REG_RFE_CFG1, rfe | 0x0003);  // EN_G_RFE=1, EN_DIR_RFE=1
+		// Enable RFE: EN_G_RFE=1 (bit 0), PD_TIA_RFE=0 (bit 1 — MUST be 0!)
+		// Register 0x010C bit layout:
+		//   [0] EN_G_RFE, [1] PD_TIA_RFE, [2] PD_RSSI, [3] PD_QGEN,
+		//   [4] PD_MXLOBUF, [5] PD_RLOOPB_2, [6] PD_RLOOPB_1, [7] PD_LNA
+		await this.proto.spiModifyReg(REG_RFE_CFG1, 0x0001, 0x0001);  // EN_G_RFE=1
+		// Power on all RFE blocks: clear PD bits [7:1] to 0
+		await this.proto.spiModifyReg(REG_RFE_CFG1, 0x00FE, 0x0000);
 
-		// Set RX path: LNAW (SEL_PATH_RFE=3, bits [8:7])
-		// Mask 0x0180 selects bits 8 and 7.
-		await this.proto.spiModifyReg(REG_RFE_CFG2, 0x0180, 0x0180);
+		// Set RX path: LNAL — best for <700 MHz
+		// SEL_PATH_RFE=2[8:7], LB1=disabled[4], LB2=disabled[3],
+		// EN_INSHSW_L=0(connected)[2], EN_INSHSW_W=1(shorted)[1]
+		await this.proto.spiModifyReg(REG_RFE_CFG2, 0x019E,
+			(2 << 7) | (1 << 4) | (1 << 3) | (0 << 2) | (1 << 1));
 
-		// Enable RBB
-		const rbb = await this.proto.spiReadReg(REG_RBB_CFG1);
-		await this.proto.spiWriteReg(REG_RBB_CFG1, rbb | 0x0003);  // EN_G_RBB=1, EN_DIR_RBB=1
+		// Enable RBB: EN_G_RBB=1 (bit 0)
+		await this.proto.spiModifyReg(REG_RBB_CFG1, 0x0001, 0x0001);
+		// Power on: PD_LPFH=0(bit 3), PD_LPFL=0(bit 2), PD_PGA=0(bit 4)
+		await this.proto.spiModifyReg(REG_RBB_CFG1, 0x001C, 0x0000);
 
-		// Power on: PD_PGA_RBB=0, PD_LPFL_RBB=0
-		await this.proto.spiModifyReg(REG_RBB_CFG1, 0x000C, 0x0000);
+		// Set analog filter bandwidth to match default sample rate
+		await this.setAnalogBandwidth(10e6);
 
 		// Enable RXTSP
 		await this.proto.spiModifyReg(REG_RXTSP_CFG, 0x0001, 0x0001);  // EN_RXTSP=1
 
-		// Bypass RXTSP processing blocks (no calibration)
-		// GC_BYP=1, PH_BYP=1, DC_BYP=1, GFIR1_BYP=1, GFIR2_BYP=1, GFIR3_BYP=1
-		await this.proto.spiWriteReg(REG_RXTSP_BYPASS, 0x007F);
+		// Configure RXTSP bypass register (0x040C):
+		// DC_BYP=0 (bit 2) — ENABLE DC offset correction (critical to avoid red waterfall)
+		// GC_BYP=1 (bit 0), PH_BYP=1 (bit 1) — bypass gain/phase correction (no cal)
+		// GFIR1_BYP=1 (bit 3), GFIR2_BYP=1 (bit 4), GFIR3_BYP=1 (bit 5) — bypass FIRs
+		// CMIX_BYP=1 (bit 6) — bypass complex mixer
+		await this.proto.spiWriteReg(REG_RXTSP_BYPASS, 0x007B);  // all bypassed EXCEPT DC correction
+
+		// Configure DC correction averaging: DCCORR_AVG_RXTSP at register 0x0404 bits [5:3]
+		await this.proto.spiModifyReg(0x0404, 0x0038, 0x0007 << 3);  // AVG=7 (max)
+
+		// Verify RXTSP configuration
+		const bypassReg = await this.proto.spiReadReg(REG_RXTSP_BYPASS);
+		const dcCorrReg = await this.proto.spiReadReg(0x0404);
+		const rxtspCfg = await this.proto.spiReadReg(REG_RXTSP_CFG);
+		console.log(`LimeSDR: RXTSP verify: CFG(0x400)=0x${rxtspCfg.toString(16)} BYPASS(0x40C)=0x${bypassReg.toString(16)} DCCORR(0x404)=0x${dcCorrReg.toString(16)}`);
 
 		// Enable SXR synthesizer
 		await this.setActiveChannel(1);  // MAC=1 selects SXR registers
@@ -523,8 +543,8 @@ class LMS7002M {
 		// EN_G=1 (bit 0), PD_VCO=0 (bit 1) in REG_SX_CFG
 		await this.proto.spiModifyReg(REG_SX_CFG, 0x0003, 0x0001);
 
-		// Power on RFE blocks: PD_MXLOBUF_RFE=0, PD_TIA_RFE=0, PD_LNA_RFE=0
-		await this.proto.spiModifyReg(REG_RFE_CFG1, 0x01FC, 0x0000);
+		// Power on remaining RFE blocks (PD_MXLOBUF, PD_QGEN, PD_LNA etc.)
+		// Already done above — all PD bits [7:1] cleared to 0
 	}
 
 	/**
@@ -593,6 +613,13 @@ class LMS7002M {
 	 *   0x0123: VCO_CMPHO[13], VCO_CMPLO[12]  (read-only)
 	 */
 	async setFrequencySXR(freqHz: number): Promise<void> {
+		// Clamp to LimeSDR frequency range (30 MHz – 3.8 GHz)
+		const clampedFreq = Math.max(30e6, Math.min(freqHz, 3.8e9));
+		if (clampedFreq !== freqHz) {
+			console.warn(`LimeSDR: frequency ${(freqHz / 1e6).toFixed(3)} MHz out of range, clamped to ${(clampedFreq / 1e6).toFixed(3)} MHz`);
+			freqHz = clampedFreq;
+		}
+
 		// Select SXR channel
 		await this.setActiveChannel(1);
 
@@ -781,18 +808,18 @@ class LMS7002M {
 
 	/**
 	 * Set LNA gain (0–15 register value, ~0–30 dB).
-	 * G_LNA_RFE is in REG_RFE_GAIN[3:0].
+	 * G_LNA_RFE is in REG_RFE_GAIN bits [9:6].
 	 */
 	async setLNAGain(value: number): Promise<void> {
-		await this.proto.spiModifyReg(REG_RFE_GAIN, 0x000F, value & 0x0F);
+		await this.proto.spiModifyReg(REG_RFE_GAIN, 0x03C0, (value & 0x0F) << 6);
 	}
 
 	/**
 	 * Set TIA gain (1–3 register value, ~0–12 dB).
-	 * G_TIA_RFE is in REG_RFE_GAIN[5:4].
+	 * G_TIA_RFE is in REG_RFE_GAIN bits [1:0].
 	 */
 	async setTIAGain(value: number): Promise<void> {
-		await this.proto.spiModifyReg(REG_RFE_GAIN, 0x0030, (value & 0x03) << 4);
+		await this.proto.spiModifyReg(REG_RFE_GAIN, 0x0003, value & 0x03);
 	}
 
 	/**
@@ -801,6 +828,74 @@ class LMS7002M {
 	 */
 	async setPGAGain(value: number): Promise<void> {
 		await this.proto.spiModifyReg(REG_RBB_PGA, 0x001F, value & 0x1F);
+	}
+
+	/**
+	 * Configure the analog RX bandwidth (TIA + RBB LPFL filters).
+	 * Must be called after enabling RBB and whenever sample rate changes.
+	 * Approximate formulas from LimeSuite's TuneRxFilterSetup:
+	 *   CFB_TIA_RFE (0x0112 [11:0]) ≈ 1680e6 / bwHz - 10
+	 *   C_CTL_LPFL_RBB (0x0116 [10:0]) ≈ 2160e6 / bwHz - 103
+	 *   RCC_CTL_LPFL_RBB (0x0118 [4:0]) = lookup based on C_CTL
+	 *   RCC_CTL_PGA_RBB (0x0119 [12:8]) ≈ 23 - 1.73 * bwMHz
+	 */
+	async setAnalogBandwidth(bwHz: number): Promise<void> {
+		// Clamp bandwidth: LPFL supports ~0.5–40 MHz
+		const bw = Math.max(0.5e6, Math.min(bwHz, 40e6));
+
+		// TIA feedback capacitor: controls TIA bandwidth
+		const cfbTia = Math.max(1, Math.min(4095, Math.round(1680e6 / bw - 10)));
+		await this.proto.spiModifyReg(0x0112, 0x0FFF, cfbTia);
+
+		// LPFL capacitor: controls LPFL cutoff frequency
+		const cCtlLpfl = Math.max(0, Math.min(2047, Math.round(2160e6 / bw - 103)));
+		await this.proto.spiModifyReg(0x0116, 0x07FF, cCtlLpfl);
+
+		// LPFL resistance: lookup table from LimeSuite
+		let rccCtlLpfl: number;
+		if (cCtlLpfl < 8) rccCtlLpfl = 7;
+		else if (cCtlLpfl < 13) rccCtlLpfl = 6;
+		else if (cCtlLpfl < 21) rccCtlLpfl = 5;
+		else if (cCtlLpfl < 37) rccCtlLpfl = 4;
+		else if (cCtlLpfl < 76) rccCtlLpfl = 3;
+		else if (cCtlLpfl < 156) rccCtlLpfl = 2;
+		else if (cCtlLpfl < 336) rccCtlLpfl = 1;
+		else rccCtlLpfl = 0;
+		await this.proto.spiModifyReg(0x0118, 0x001F, rccCtlLpfl);
+
+		// PGA resistance
+		const bwMHz = bw / 1e6;
+		const rccCtlPga = Math.max(0, Math.min(31, Math.round(23 - 1.73 * bwMHz)));
+		await this.proto.spiModifyReg(0x0119, 0x1F00, rccCtlPga << 8);
+
+		console.log(`LimeSDR: analog BW=${(bw / 1e6).toFixed(1)} MHz — CFB_TIA=${cfbTia}, C_LPFL=${cCtlLpfl}, RCC_LPFL=${rccCtlLpfl}, RCC_PGA=${rccCtlPga}`);
+	}
+
+	/**
+	 * Set RX antenna path, including input switches.
+	 * path: 0=LNAW (wideband), 1=LNAL (low, <700MHz), 2=LNAH (high)
+	 *
+	 * Register 0x010D bits:
+	 *   [8:7] SEL_PATH_RFE: 1=LNAH, 2=LNAL, 3=LNAW
+	 *   [4]   EN_INSHSW_LB1_RFE: loopback 1 switch (1=disabled)
+	 *   [3]   EN_INSHSW_LB2_RFE: loopback 2 switch (1=disabled)
+	 *   [2]   EN_INSHSW_L_RFE: LNAL input switch (0=connected, 1=shorted)
+	 *   [1]   EN_INSHSW_W_RFE: LNAW input switch (0=connected, 1=shorted)
+	 */
+	async setAntennaPath(path: number): Promise<void> {
+		// SEL_PATH_RFE values and input switch config per path
+		// Switches: 0 = active/connected, 1 = disabled/shorted
+		const configs: Record<number, { sel: number; swL: number; swW: number }> = {
+			0: { sel: 3, swL: 1, swW: 0 },  // LNAW: connect W, disconnect L
+			1: { sel: 2, swL: 0, swW: 1 },  // LNAL: connect L, disconnect W
+			2: { sel: 1, swL: 1, swW: 1 },  // LNAH: disconnect both (uses separate input)
+		};
+		const cfg = configs[path] ?? configs[0];
+
+		// Set SEL_PATH_RFE[8:7], EN_INSHSW_LB1[4]=1, EN_INSHSW_LB2[3]=1,
+		// EN_INSHSW_L[2], EN_INSHSW_W[1]
+		const val = ((cfg.sel & 3) << 7) | (1 << 4) | (1 << 3) | (cfg.swL << 2) | (cfg.swW << 1);
+		await this.proto.spiModifyReg(REG_RFE_CFG2, 0x019E, val);
 	}
 }
 
@@ -812,11 +907,14 @@ export class LimeSDRDevice implements SdrDevice {
 		1000000, 2000000, 4000000, 5000000,
 		8000000, 10000000, 15000000, 20000000, 30000000,
 	];
-	readonly sampleFormat = 'int16' as const;
+	readonly sampleFormat = 'int8' as const;
 	readonly gainControls: GainControl[] = [
 		{ name: 'LNA', min: 1, max: 15, step: 1, default: 9, type: 'slider' },
 		{ name: 'TIA', min: 1, max: 3, step: 1, default: 3, type: 'slider' },
 		{ name: 'PGA', min: 0, max: 31, step: 1, default: 16, type: 'slider' },
+		// Antenna path selection
+		{ name: 'Antenna', min: 0, max: 2, step: 1, default: 1, type: 'select',
+		  labels: ['LNAW (Wideband)', 'LNAL (Low <700MHz)', 'LNAH (High >700MHz)'] },
 	];
 
 	private dev!: USBDevice;
@@ -905,13 +1003,9 @@ export class LimeSDRDevice implements SdrDevice {
 		await this.proto.spiWriteReg(0x0022, 0x0FFF);
 
 		// 0x0023: LML direction/mode/routing — CRITICAL register!
-		// LimeSuite Init: 0x5550
-		// Bit 0:  LML1_MODE=0 (TRXIQ, NOT JESD207!)
-		// Bit 1:  LML1_TXNRXIQ=0 (Port 1 carries RXIQ data)
-		// Bit 3:  LML2_MODE=0 (TRXIQ, NOT JESD207!)
-		// Bit 4:  LML2_TXNRXIQ=1 (Port 2 carries TXIQ data)
-		// Bit 6:  MOD_EN=1 (LimeLight enabled)
-		// Bits 8,10: ENABLEDIR1/2=1, Bits 12,14: DIQDIR1/2=1 (all auto-direction)
+		// TRXIQ mode (bit 0=0): TX and RX data are time-multiplexed on the same port.
+		// The FPGA receives RX data interleaved with TX on port 2 (DIQ2).
+		// LimeSuite Init: 0x5550 — this is the correct value for TRXIQ mode.
 		await this.proto.spiWriteReg(0x0023, 0x5550);
 
 		// 0x0024, 0x0027: Sample position mapping (default: AI=0, AQ=1, BI=2, BQ=3)
@@ -935,7 +1029,6 @@ export class LimeSDRDevice implements SdrDevice {
 		// LimeSuite Init: 0x0038
 		// MCLK1SRC[3:2]=2 (TXTSPCLKA_DIV) — TX clock for Port 1/DIQ1
 		// MCLK2SRC[5:4]=3 (RXTSPCLKA_DIV) — RX clock for Port 2/DIQ2
-		// Previous code had these SWAPPED and split across two registers!
 		await this.proto.spiWriteReg(0x002B, 0x0038);
 
 		// 0x002C: TSP clock dividers (LimeSuite Init: 0x0000)
@@ -1011,6 +1104,8 @@ export class LimeSDRDevice implements SdrDevice {
 		this.currentSampleRate = rate;
 		// CGEN = sampleRate (no oversampling, RXTSP decimation bypassed)
 		await this.lms.setCGENFrequency(rate);
+		// Reconfigure analog filter bandwidth to match new sample rate
+		await this.lms.setAnalogBandwidth(rate);
 		// Reconfigure both FPGA PLLs to match new rate WITH phase alignment
 		// Phase formula from LimeSuite SetInterfaceFreq (non-search path):
 		// Only Clock 1 of each PLL needs phase shift for DDR data capture
@@ -1025,6 +1120,8 @@ export class LimeSDRDevice implements SdrDevice {
 	}
 
 	async setGain(name: string, value: number): Promise<void> {
+		// Ensure we're writing to channel A registers
+		await this.lms.setActiveChannel(1);
 		switch (name) {
 			case 'LNA':
 				await this.lms.setLNAGain(value);
@@ -1035,9 +1132,28 @@ export class LimeSDRDevice implements SdrDevice {
 			case 'PGA':
 				await this.lms.setPGAGain(value);
 				break;
+			case 'Antenna':
+				await this.lms.setAntennaPath(value);
+				break;
 			default:
 				console.warn(`LimeSDR: unknown gain "${name}"`);
+				return;
 		}
+		// Readback ALL gain-related registers to verify writes
+		const reg0113 = await this.proto.spiReadReg(0x0113);
+		const reg0119 = await this.proto.spiReadReg(0x0119);
+		const reg010C = await this.proto.spiReadReg(0x010C);
+		const reg010D = await this.proto.spiReadReg(0x010D);
+		const lna = (reg0113 >> 6) & 0xF;
+		const tia = reg0113 & 0x3;
+		const pga = reg0119 & 0x1F;
+		const sel = (reg010D >> 7) & 0x3;
+		const swL = (reg010D >> 2) & 1;
+		const swW = (reg010D >> 1) & 1;
+		console.log(`LimeSDR: setGain(${name}=${value}) → ` +
+			`LNA=${lna} TIA=${tia} PGA=${pga} PATH=${sel} swL=${swL} swW=${swW} | ` +
+			`0x0113=0x${reg0113.toString(16)} 0x0119=0x${reg0119.toString(16)} ` +
+			`0x010C=0x${reg010C.toString(16)} 0x010D=0x${reg010D.toString(16)}`);
 	}
 
 	async startRx(callback: (data: ArrayBufferView) => void): Promise<void> {
@@ -1084,6 +1200,18 @@ export class LimeSDRDevice implements SdrDevice {
 		await this.proto.spiWriteReg(0x0020, reg20 & ~0xFFC0);  // assert all resets
 		await this.proto.spiWriteReg(0x0020, reg20 | 0xFFC0);   // release all resets
 
+		// Re-apply RXTSP configuration AFTER logic reset (reset reverts registers!)
+		await this.proto.spiModifyReg(REG_RXTSP_CFG, 0x0001, 0x0001);  // EN_RXTSP=1
+		// DC_BYP=0 (bit 2): ENABLE DC correction; bypass everything else
+		await this.proto.spiWriteReg(REG_RXTSP_BYPASS, 0x007B);
+		// DCCORR_AVG_RXTSP[2:0] at register 0x0404 bits [5:3] (NOT 0x040E!)
+		await this.proto.spiModifyReg(0x0404, 0x0038, 0x0007 << 3);  // AVG=7 (max)
+
+		// Verify RXTSP state after reset+reconfig
+		const postResetBypass = await this.proto.spiReadReg(REG_RXTSP_BYPASS);
+		const postResetDccorr = await this.proto.spiReadReg(0x0404);
+		console.log(`LimeSDR: RXTSP post-reset: BYPASS=0x${postResetBypass.toString(16)} DCCORR(0x404)=0x${postResetDccorr.toString(16)}`);
+
 		// Debug: read back all streaming-related FPGA registers
 		const dbgRegs = [0x0007, 0x0008, 0x0009, 0x000A, 0xFFFF];
 		for (const addr of dbgRegs) {
@@ -1099,9 +1227,9 @@ export class LimeSDRDevice implements SdrDevice {
 		const addrs1 = [0x0020, 0x0022, 0x0023, 0x002A, 0x002B, 0x002C, 0x002E];
 		console.log('LimeSDR: LMS[1]: ' + diagBatch1.map((v, i) =>
 			`${names1[i]}(${addrs1[i].toString(16)})=0x${v.toString(16).padStart(4, '0')}`).join(' '));
-		const diagBatch2 = await this.proto.spiRead([0x0082, 0x0400, 0x0200, 0x010C, 0x010D, 0x0115, 0x011C]);
-		const names2 = ['AFE', 'RXTSP', 'TXTSP', 'RFE1', 'RFE2', 'RBB', 'SX_CFG'];
-		const addrs2 = [0x0082, 0x0400, 0x0200, 0x010C, 0x010D, 0x0115, 0x011C];
+		const diagBatch2 = await this.proto.spiRead([0x0082, 0x0400, 0x040C, 0x0404, 0x010C, 0x010D, 0x0113]);
+		const names2 = ['AFE', 'RXTSP_CFG', 'RXTSP_BYP', 'RXTSP_DC', 'RFE_PD', 'RFE_PATH', 'RFE_GAIN'];
+		const addrs2 = [0x0082, 0x0400, 0x040C, 0x0404, 0x010C, 0x010D, 0x0113];
 		console.log('LimeSDR: LMS[2]: ' + diagBatch2.map((v, i) =>
 			`${names2[i]}(${addrs2[i].toString(16)})=0x${v.toString(16).padStart(4, '0')}`).join(' '));
 
@@ -1135,61 +1263,68 @@ export class LimeSDRDevice implements SdrDevice {
 			console.warn(`LimeSDR: test transfer failed: ${msg}`);
 		}
 
+		// LimeSDR packet constants
+		const PACKET_SZ = 4096;
+		const HDR_SZ = 16;
+		const PAYLOAD_SZ = PACKET_SZ - HDR_SZ;  // 4080
+		const MAX_PACKETS = TRANSFER_BUFFER_SIZE / PACKET_SZ;
+
 		// Launch parallel bulk transfers
 		let transferCount = 0;
-		const transfer = async (): Promise<void> => {
-			await Promise.resolve();
-			while (this.rxRunning) {
-				try {
-					const result = await this.dev.transferIn(epNum, TRANSFER_BUFFER_SIZE);
-					if (result.status !== 'ok' || !result.data) {
-						console.warn(`LimeSDR: transferIn status=${result.status}, data=${!!result.data}`);
+
+		const makeTransferLoop = () => {
+			// Pre-allocate output buffer: each packet has PAYLOAD_SZ/2 int8 samples
+			const loopOutI8 = new Int8Array(MAX_PACKETS * PAYLOAD_SZ / 2);
+
+			return async (): Promise<void> => {
+				await Promise.resolve();
+				while (this.rxRunning) {
+					try {
+						const result = await this.dev.transferIn(epNum, TRANSFER_BUFFER_SIZE);
+						if (result.status !== 'ok' || !result.data) {
+							console.warn(`LimeSDR: transferIn status=${result.status}, data=${!!result.data}`);
+							break;
+						}
+
+						const raw = new Uint8Array(result.data.buffer, result.data.byteOffset, result.data.byteLength);
+						const numPackets = Math.floor(raw.length / PACKET_SZ);
+
+						// Diagnostic: log sample statistics for first few transfers
+						if (transferCount < 3) {
+							const header = Array.from(raw.slice(0, 16)).map(b => b.toString(16).padStart(2, '0')).join(' ');
+							// Read first packet payload as int16 for diagnostics
+							const diagView = new DataView(raw.buffer, raw.byteOffset + HDR_SZ, PAYLOAD_SZ);
+							const first8 = Array.from({ length: 8 }, (_, i) => diagView.getInt16(i * 2, true)).join(', ');
+							console.log(`LimeSDR: transfer #${transferCount}, ${raw.length} bytes, header: ${header} | first8: [${first8}]`);
+							transferCount++;
+						}
+
+						// Zero-copy Int16→Int8: read the high byte of each little-endian int16
+						// directly from the raw USB buffer, skipping packet headers.
+						// This eliminates the intermediate payload copy entirely.
+						let outPos = 0;
+						for (let pkt = 0; pkt < numPackets; pkt++) {
+							// High byte of LE int16 is at odd offsets within payload
+							const base = pkt * PACKET_SZ + HDR_SZ + 1;
+							for (let j = 0; j < PAYLOAD_SZ; j += 2) {
+								loopOutI8[outPos++] = raw[base + j];  // auto sign-wraps in Int8Array
+							}
+						}
+
+						callback(new Uint8Array(loopOutI8.buffer, 0, outPos));
+					} catch (e: unknown) {
+						if (this.rxRunning) {
+							const msg = e instanceof Error ? e.message : String(e);
+							console.error('LimeSDR: transfer error:', msg);
+						}
 						break;
 					}
-
-					const raw = new Uint8Array(result.data.buffer, result.data.byteOffset, result.data.byteLength);
-
-					// Log first few transfers for debugging
-					if (transferCount < 3) {
-						const header = Array.from(raw.slice(0, 16)).map(b => b.toString(16).padStart(2, '0')).join(' ');
-						console.log(`LimeSDR: transfer #${transferCount}, ${raw.length} bytes, header: ${header}`);
-						transferCount++;
-					}
-
-					// LimeSDR USB: fixed 4096-byte packets, 16-byte header + 4080 bytes payload
-					// Payload = 2040 int16 samples (1020 complex IQ pairs)
-					// Use DataView for unaligned int16 reads
-					const PACKET_SZ = 4096;
-					const HDR_SZ = 16;
-					const numPackets = Math.floor(raw.length / PACKET_SZ);
-					const samplesPerPacket = (PACKET_SZ - HDR_SZ) / 2;  // 2040
-					const int8Data = new Int8Array(numPackets * samplesPerPacket);
-					let outIdx = 0;
-
-					const dv = new DataView(raw.buffer, raw.byteOffset, raw.byteLength);
-
-					for (let pkt = 0; pkt < numPackets; pkt++) {
-						const base = pkt * PACKET_SZ + HDR_SZ;
-						for (let i = 0; i < samplesPerPacket; i++) {
-							int8Data[outIdx++] = dv.getInt16(base + i * 2, true) >> 4;
-						}
-					}
-
-					if (outIdx > 0) {
-						callback(new Uint8Array(int8Data.buffer, 0, outIdx));
-					}
-				} catch (e: unknown) {
-					if (this.rxRunning) {
-						const msg = e instanceof Error ? e.message : String(e);
-						console.error('LimeSDR: transfer error:', msg);
-					}
-					break;
 				}
-			}
+			};
 		};
 
-		// 4 concurrent transfers for throughput
-		this.rxRunning = Array.from({ length: 4 }, transfer);
+		// 8 concurrent transfers, each with its own buffers (matches HackRF)
+		this.rxRunning = Array.from({ length: 8 }, () => makeTransferLoop()());
 	}
 
 	async stopRx(): Promise<void> {
