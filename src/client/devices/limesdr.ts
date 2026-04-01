@@ -998,9 +998,10 @@ export class LimeSDRDevice implements SdrDevice {
 		// 0x0021: Pad pull-ups and SPI mode (4-wire)
 		await this.proto.spiWriteReg(0x0021, 0x0E9F);
 
-		// 0x0022: DIQ pad control. NO SISODDR (bit 12=0, bit 14=0) — use standard MIMO interface
-		// LimeSuite Init: 0x0FFF
-		await this.proto.spiWriteReg(0x0022, 0x0FFF);
+		// 0x0022: DIQ pad control. Enable SISO DDR on both ports (bits 14,12 = 1).
+		// SISO DDR doubles the per-channel data rate: I on rising edge, Q on falling.
+		// Without SISO DDR, MIMO mode halves the channel A rate (interleaved A/B slots).
+		await this.proto.spiWriteReg(0x0022, 0x5FFF);
 
 		// 0x0023: LML direction/mode/routing — CRITICAL register!
 		// TRXIQ mode (bit 0=0): TX and RX data are time-multiplexed on the same port.
@@ -1179,10 +1180,11 @@ export class LimeSDRDevice implements SdrDevice {
 		// Reset USB streaming FIFOs (0x00 means stream buffer reset, LimeSuite requires this)
 		await this.proto.resetUSBFIFO(0x00);
 
-		// Set interface mode — MUST match LMS7002M LML1_SISODDR setting!
-		// LML1_SISODDR=0 (reg 0x0022) → FPGA uses MIMO mode (0x0100)
+		// Set interface mode — MUST match LMS7002M SISODDR setting!
+		// SISODDR=1 (reg 0x0022 bits 14,12) → FPGA uses SISO DDR mode (0x0040)
+		// In SISO DDR: full clock rate dedicated to channel A (no MIMO halving)
 		// smpl_width[1:0]=00 for 16-bit samples
-		await this.proto.fpgaWrite(0x0008, 0x0100);
+		await this.proto.fpgaWrite(0x0008, 0x0040);
 
 		// Enable channel A (Single channel mode)
 		await this.proto.fpgaWrite(0x0007, 0x0001);
@@ -1303,15 +1305,16 @@ export class LimeSDRDevice implements SdrDevice {
 							transferCount++;
 						}
 
-						// Zero-copy Int16→Int8: read the high byte of each little-endian int16
-						// directly from the raw USB buffer, skipping packet headers.
-						// This eliminates the intermediate payload copy entirely.
+						// Int16→Int8: convert 12-bit samples (in 16-bit LE containers)
+						// to 8-bit by right-shifting by 4. This maps the 12-bit range
+						// (±2048) to the full int8 range (±128), preserving dynamic range.
+						// The old approach (>> 8, taking high byte) lost 4 bits of precision.
+						const dv = new DataView(raw.buffer, raw.byteOffset, raw.byteLength);
 						let outPos = 0;
 						for (let pkt = 0; pkt < numPackets; pkt++) {
-							// High byte of LE int16 is at odd offsets within payload
-							const base = pkt * PACKET_SZ + HDR_SZ + 1;
+							const base = pkt * PACKET_SZ + HDR_SZ;
 							for (let j = 0; j < PAYLOAD_SZ; j += 2) {
-								loopOutI8[outPos++] = raw[base + j];  // auto sign-wraps in Int8Array
+								loopOutI8[outPos++] = dv.getInt16(base + j, true) >> 4;
 							}
 						}
 
