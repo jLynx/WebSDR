@@ -114,5 +114,13 @@ export function createAppData() {
 		sidebarOpen: false,
 		showAbout: false,
 		collapsedPanels: {} as Record<string, boolean>,
+		vfoConflictDialog: {
+			show: false,
+			vfoIndex: -1,
+			requestedFreq: 0,
+			previousFreq: 0,
+			optionA: null as { centerFreq: number; description: string } | null,
+			optionB: null as { centerFreq: number; description: string; excludedVfos: number[] } | null,
+		},
 	};
 }

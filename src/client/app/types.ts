@@ -138,5 +138,14 @@ export interface Bookmark {
 	activeVfoIndex?: number;
 }
 
+export interface VfoConflictDialog {
+	show: boolean;
+	vfoIndex: number;
+	requestedFreq: number;
+	previousFreq: number;
+	optionA: { centerFreq: number; description: string } | null;
+	optionB: { centerFreq: number; description: string; excludedVfos: number[] } | null;
+}
+
 // Use `any` for the full AppInstance type since it's complex with Vue internals
 export type AppInstance = any;

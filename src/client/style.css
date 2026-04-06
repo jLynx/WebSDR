@@ -171,6 +171,33 @@ body {
 	opacity: 0.35;
 }
 
+.vfo-oob-badge {
+	font-size: 9px;
+	font-weight: 700;
+	letter-spacing: 0.5px;
+	color: #fff;
+	background: #e65100;
+	padding: 1px 4px;
+	border-radius: 3px;
+	align-self: center;
+	margin-left: 5px;
+}
+
+.vfo-display.vfo-oob .vfo-freq-input,
+.vfo-display.vfo-oob .vfo-unit {
+	opacity: 0.45;
+	color: #e65100;
+}
+
+.panel.panel-oob .panel-body {
+	opacity: 0.4;
+	pointer-events: none;
+}
+
+.panel.panel-oob .panel-header {
+	opacity: 0.7;
+}
+
 .vfo-mute-badge {
 	align-self: center;
 	margin-left: 5px;
@@ -2192,6 +2219,11 @@ canvas {
 
 	.vfo-bottom-tab.vfo-audio-off {
 		opacity: 0.4;
+	}
+
+	.vfo-bottom-tab.vfo-oob {
+		opacity: 0.5;
+		border-color: #e65100;
 	}
 
 	.vfo-bottom-freq {

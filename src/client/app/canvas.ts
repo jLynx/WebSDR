@@ -225,6 +225,7 @@ export function mountCanvas(this: AppInstance) {
 	let isDraggingVFO = false;
 	let isPanning = false;
 	let lastPanX = 0;
+	let dragPrevFreq = 0;
 
 	const getFreqFromEvent = (e: MouseEvent) => {
 		const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
@@ -275,6 +276,14 @@ export function mountCanvas(this: AppInstance) {
 
 	const leaveListener = () => {
 		this.$refs.hoverTick.style.display = "none";
+		if (isDraggingVFO) {
+			const idx = this.activeVfoIndex;
+			if (idx >= 0 && idx < this.vfos.length) {
+				const finalFreq = this.vfos[idx].freq;
+				this.vfos[idx].freq = dragPrevFreq;
+				this.validateAndApplyVfoFreq(idx, finalFreq);
+			}
+		}
 		isDraggingVFO = false;
 		isPanning = false;
 	};
@@ -286,6 +295,7 @@ export function mountCanvas(this: AppInstance) {
 			const f = getFreqFromEvent(e);
 			const idx = this.activeVfoIndex;
 			if (idx >= 0 && idx < this.vfos.length) {
+				dragPrevFreq = this.vfos[idx].freq;
 				this.vfos[idx].freq = parseFloat(f.toFixed(3));
 				this.updateBackendVfoParams(idx);
 			}
@@ -297,6 +307,15 @@ export function mountCanvas(this: AppInstance) {
 	};
 
 	const handleMouseUp = (e: MouseEvent) => {
+		if (isDraggingVFO) {
+			const idx = this.activeVfoIndex;
+			if (idx >= 0 && idx < this.vfos.length) {
+				const finalFreq = this.vfos[idx].freq;
+				// Revert to pre-drag freq, then validate the final position
+				this.vfos[idx].freq = dragPrevFreq;
+				this.validateAndApplyVfoFreq(idx, finalFreq);
+			}
+		}
 		isDraggingVFO = false;
 		isPanning = false;
 	};
@@ -396,8 +415,7 @@ export function mountCanvas(this: AppInstance) {
 				const f = this.minFreq + p * (this.maxFreq - this.minFreq);
 				const idx = this.activeVfoIndex;
 				if (idx >= 0 && idx < this.vfos.length) {
-					this.vfos[idx].freq = parseFloat(f.toFixed(3));
-					this.updateBackendVfoParams(idx);
+					this.validateAndApplyVfoFreq(idx, parseFloat(f.toFixed(3)));
 				}
 			}
 		}
