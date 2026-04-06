@@ -310,7 +310,12 @@ class LimeSDR {
 		// 5. Enable CGEN and configure for default sample rate
 		await this.modifyReg(REG_CGEN_CFG, 0, 0, 1);  // EN_G_CGEN = 1
 		console.log(`LimeSDR: setting CGEN for ${(this.currentSampleRate / 1e6).toFixed(2)} MS/s...`);
-		await this.setCGENFrequency(this.currentSampleRate * 4);
+		// MIMO mode: interface alternates chA/chB each clock, so per-channel rate = FCLK/2
+		// Need CGEN = rate * 8 (vs rate * 4 for SISO DDR)
+		await this.setCGENFrequency(this.currentSampleRate * 8);
+
+		// Set analog bandwidth
+		await this.setAnalogBandwidth(this.currentSampleRate);
 
 		// 6. Enable RFE (RX front-end) — power on ALL blocks
 		await this.modifyReg(REG_RFE_EN, 0, 0, 1);    // EN_G_RFE = 1
@@ -331,26 +336,62 @@ class LimeSDR {
 		// Power on RBB blocks: PD_LPFH=0(bit3), PD_LPFL=0(bit2), PD_PGA=0(bit4)
 		await this.modifyReg(REG_RBB_EN, 4, 2, 0);
 
-		// 8b. Configure analog filter bandwidth to match sample rate
-		await this.setAnalogBandwidth(this.currentSampleRate);
+		// 8b. Configure RxTSP
+		await this.configureRxTSP();
+
+		// 8c. Enable TxTSP (needed for clock routing)
+		await this.modifyReg(REG_TXTSP_CFG, 0, 0, 1);
+
+		// 8d. Configure LML interface
+		await this.configureLML();
+
+		// 8e. Configure FPGA
+		await this.configureFPGA();
 
 		// 9. Configure and tune SXR (RX LO synthesizer)
 		console.log(`LimeSDR: tuning SXR to ${(this.currentFrequency / 1e6).toFixed(3)} MHz...`);
 		await this.setFrequencySXR(this.currentFrequency);
 
-		// 10. Enable and configure RxTSP
-		await this.configureRxTSP();
-
-		// 11. Enable TxTSP (needed for clock routing even in RX-only mode)
-		await this.modifyReg(REG_TXTSP_CFG, 0, 0, 1);  // EN_TXTSP = 1
-
-		// 12. Configure LML interface for SISO RX
-		await this.configureLML();
-
-		// 13. Configure FPGA
-		await this.configureFPGA();
+		// 10. Dump key registers for diagnostics
+		await this.dumpRegisters();
 
 		console.log('LimeSDR: initialization complete');
+	}
+
+	// ── Register Diagnostics ────────────────────────────────────
+
+	private async dumpRegisters(): Promise<void> {
+		const regs: [string, number][] = [
+			['RESET (0x0020)',    REG_RESET],
+			['DIQ_PAD (0x0022)', 0x0022],
+			['LML_CONF (0x0023)', REG_LML_CONF1],
+			['LML1_MAP (0x0024)', REG_LML1_MAP],
+			['CLK_MUX (0x002A)', REG_CLK_MUX],
+			['CLK_SRC (0x002B)', REG_CLK_SRC],
+			['AFE_CFG (0x0082)', REG_AFE_CFG],
+			['RXTSP_CFG (0x0400)', REG_RXTSP_CFG],
+			['RXTSP_DEC (0x0403)', REG_RXTSP_DEC],
+			['RXTSP_BYP (0x040C)', REG_RXTSP_BYP],
+		];
+		const vals: string[] = [];
+		for (const [name, addr] of regs) {
+			const val = await this.readLMS7002(addr);
+			vals.push(`${name}=0x${val.toString(16).padStart(4, '0')}`);
+		}
+		console.log('LimeSDR LMS7002 regs: ' + vals.join(', '));
+
+		// FPGA registers
+		const fpgaRegs: [string, number][] = [
+			['IFACE (0x0008)', FPGA_REG_IFACE],
+			['CH_EN (0x0007)', FPGA_REG_CH_EN],
+			['CTRL (0x000A)', FPGA_REG_CTRL],
+		];
+		const fpgaVals: string[] = [];
+		for (const [name, addr] of fpgaRegs) {
+			const val = await this.readFPGA(addr);
+			fpgaVals.push(`${name}=0x${val.toString(16).padStart(4, '0')}`);
+		}
+		console.log('LimeSDR FPGA regs: ' + fpgaVals.join(', '));
 	}
 
 	// ── CGEN PLL (Clock Generator) ──────────────────────────────
@@ -475,7 +516,17 @@ class LimeSDR {
 			console.warn(`LimeSDR: SX VCO failed to lock at ${(freq_Hz / 1e6).toFixed(3)} MHz`);
 			return;
 		}
-		console.log(`LimeSDR: SXR locked at ${(freq_Hz / 1e6).toFixed(3)} MHz, VCO=${bestVCO}, CSW=${bestCSW}, div_loch=${div_loch}`);
+		// Readback and verify actual programmed frequency
+		const rbInt = getBits(await this.readLMS7002(REG_SX_INT), 13, 4);
+		const rbFracL = await this.readLMS7002(REG_SX_FRAC_L);
+		const rbFracH = getBits(await this.readLMS7002(REG_SX_INT), 3, 0);
+		const rbDiv = getBits(await this.readLMS7002(REG_SX_DIV), 8, 6);
+		const rbEnDiv2 = getBits(await this.readLMS7002(REG_SX_CFG), 10, 10);
+		const rbFrac = (rbFracH << 16) | rbFracL;
+		const rbDivisor = rbEnDiv2 ? 2 : 1;
+		const rbVCO = (rbInt + 4 + rbFrac / (1 << 20)) * REF_CLK * rbDivisor;
+		const rbFreq = rbVCO / (1 << (rbDiv + 1));
+		console.log(`LimeSDR: SXR locked at ${(freq_Hz / 1e6).toFixed(3)} MHz, actual=${(rbFreq / 1e6).toFixed(3)} MHz, VCO=${bestVCO}, CSW=${bestCSW}, div_loch=${div_loch}, INT=${rbInt}, FRAC=${rbFrac}, DIV=${rbDiv}, EN_DIV2=${rbEnDiv2}`);
 
 		// Apply best VCO + CSW
 		let vcoReg = await this.readLMS7002(REG_SX_VCO);
@@ -529,17 +580,42 @@ class LimeSDR {
 		return false;
 	}
 
+	// ── Interface Rate Configuration ────────────────────────────
+	// Matches LimeSuite's SetRate + SetInterfaceFrequency logic
+
 	// ── RxTSP Configuration ─────────────────────────────────────
 
 	private async configureRxTSP(): Promise<void> {
 		// Enable RxTSP
 		await this.modifyReg(REG_RXTSP_CFG, 0, 0, 1);
-		// Set decimation for 4x oversampling: HBD_OVR=1 → decimate by 4
-		await this.modifyReg(REG_RXTSP_DEC, 14, 12, 1);
+
+		// HBD_OVR_RXTSP = 7 → bypass decimation
+		// In SISO DDR bypass mode: CGEN = sampleRate × 4, no decimation needed
+		await this.modifyReg(REG_RXTSP_DEC, 14, 12, 7);
+
 		// AGC bypass
 		await this.modifyReg(REG_RXTSP_AGC, 13, 12, 2);
-		// Bypass unused DSP blocks (GFIR1,2,3, GC, PH)
-		await this.writeLMS7002(REG_RXTSP_BYP, 0x00FF);
+
+		// Bypass register 0x040C:
+		// All TSP blocks bypassed except DC correction (bit 2 = 0)
+		// Bit 7: CMIX_BYP=1 (bypass NCO — no digital frequency shift)
+		// Bit 6: AGC_BYP=1, Bits 5-3: GFIR3/2/1_BYP=1
+		// Bit 1: GC_BYP=1, Bit 0: PH_BYP=1 (no calibration data available)
+		await this.writeLMS7002(REG_RXTSP_BYP, 0x00FB);
+
+		// Zero the NCO phase/frequency registers to ensure no residual mixing
+		// PHO registers 0x0440-0x0449 (NCO frequency words)
+		await this.writeLMS7002(0x0440, 0x0000);  // FCW0 [15:0]
+		await this.writeLMS7002(0x0441, 0x0000);  // FCW0 [31:16]
+		await this.writeLMS7002(0x0442, 0x0000);  // PHO0
+
+		// DC correction averaging (register 0x0404 bits [2:0] per LimeSuite)
+		await this.modifyReg(0x0404, 2, 0, 7);  // Max averaging window
+
+		// Set IQ correction defaults (unity gain, zero phase)
+		await this.writeLMS7002(0x0401, 2047);  // GCORRQ = 2047 (unity)
+		await this.writeLMS7002(0x0402, 2047);  // GCORRI = 2047 (unity)
+		await this.modifyReg(REG_RXTSP_DEC, 11, 0, 0);  // IQCORR = 0 (no phase correction)
 	}
 
 	// ── LML Interface Configuration ─────────────────────────────
@@ -548,8 +624,10 @@ class LimeSDR {
 		// 0x0021: Pad pull-ups and SPI mode (4-wire)
 		await this.writeLMS7002(0x0021, 0x0E9F);
 
-		// 0x0022: DIQ pad control — enable SISO DDR on both ports (bits 14,12 = 1)
-		await this.writeLMS7002(0x0022, 0x5FFF);
+		// 0x0022: DIQ pad control — MIMO mode (SISODDR disabled)
+		// SISO DDR (bits 14,12=1) was causing Q data loss due to FPGA DDR edge selection
+		// MIMO mode properly captures I on one DDR edge, Q on the other
+		await this.writeLMS7002(0x0022, 0x0FFF);
 
 		// 0x0023: LML direction/mode/routing (LimeSuite Init default)
 		await this.writeLMS7002(REG_LML_CONF1, 0x5550);
@@ -558,22 +636,19 @@ class LimeSDR {
 		await this.writeLMS7002(REG_LML1_MAP, 0xE4E4);
 		await this.writeLMS7002(0x0027, 0xE4E4);
 
-		// 0x002A: FIFO clock mux routing
-		// TXRDCLK=TXTSPCLK(2), TXWRCLK=FCLK1(0), RXRDCLK=FCLK2(1), RXWRCLK=RXTSPCLK(2)
-		await this.writeLMS7002(REG_CLK_MUX, 0x0086);
-
-		// 0x002B: MCLK source configuration
-		// MCLK1SRC=TXTSPCLKA_DIV(2), MCLK2SRC=RXTSPCLKA_DIV(3)
-		await this.writeLMS7002(REG_CLK_SRC, 0x0038);
-
-		// 0x002C: TSP clock dividers
+		// 0x002C: No TSP clock dividers (bypass mode)
 		await this.writeLMS7002(0x002C, 0x0000);
 
-		// Set RXTSP decimation to bypass (HBD_OVR_RXTSP = 7 means bypass)
-		await this.modifyReg(0x0403, 14, 12, 7);
+		// 0x002A: FIFO clock mux routing for MIMO bypass (decimation=7, siso=0)
+		// Per LimeSuite SetInterfaceFrequency:
+		//   RXRDCLK_MUX[3:2]=3, RXWRCLK_MUX[1:0]=1 (mimoBypass RX path)
+		//   TXRDCLK_MUX[7:6]=0, TXWRCLK_MUX[5:4]=0 (mimoBypass TX path)
+		// = (0<<6) | (0<<4) | (3<<2) | (1<<0) = 0x000D
+		await this.writeLMS7002(REG_CLK_MUX, 0x000D);
 
-		// Enable TXTSP (needed for MCLK clock generation)
-		await this.modifyReg(REG_TXTSP_CFG, 0, 0, 1);
+		// 0x002B: MCLK sources (LimeSuite Init default)
+		// MCLK1SRC[3:2]=2 (TXTSPCLKA_DIV), MCLK2SRC[5:4]=3 (RXTSPCLKA_DIV)
+		await this.writeLMS7002(REG_CLK_SRC, 0x0038);
 	}
 
 	// ── FPGA Configuration ──────────────────────────────────────
@@ -585,29 +660,34 @@ class LimeSDR {
 		// Stop any existing streaming
 		await this.writeFPGA(FPGA_REG_CTRL, 0x0000);
 
-		// Set stream mode: 0x0100 = normal DDI mode, 0x0000 = 16-bit samples
+		// Set stream mode: MIMO (0x0100), 16-bit samples
+		// MIMO mode captures I and Q from separate DDR edges correctly
+		// (SISO DDR 0x0040 was losing Q data due to FPGA edge selection)
 		await this.writeFPGA(FPGA_REG_IFACE, 0x0100);
 
-		// Enable channel A
+		// Channel A only — LimeSuite uses ch_en=1 with MIMO for single-channel RX
+		// Data format is non-interleaved: [I, Q, I, Q, ...]
 		await this.writeFPGA(FPGA_REG_CH_EN, 0x0001);
 
 		// Configure FPGA PLL for RX
 		await this.configureFPGAPLL();
 
-		console.log('LimeSDR: FPGA configured');
+		console.log('LimeSDR: FPGA configured (MIMO mode, ch A)');
 	}
 
 	private async configureFPGAPLL(): Promise<void> {
-		// FPGA PLL input = MCLK2 = CGEN/4 = sampleRate (NOT CGEN frequency)
-		const pllInputFreq = this.currentSampleRate;
+		// FPGA PLL input = MCLK2 = GetReferenceClk_TSP(Rx) = CGEN/4 = rate*2 (MIMO mode)
+		const pllInputFreq = this.currentSampleRate * 2;
+		// In MIMO bypass (CLK_MUX & 0x0F == 0x0D), output clocks = 2 * input
+		// per LimeSuite: clocks[0].outFrequency = bypassRx ? 2*rxRate_Hz : rxRate_Hz
+		const pllOutputFreq = pllInputFreq * 2;
 
-		// Both outputs at sampleRate, with phase alignment for DDR data capture
 		const rxPhase = 89.46 + 1.24e-6 * this.currentSampleRate;
 		const txPhase = 89.61 + 2.71e-7 * this.currentSampleRate;
 
 		// Configure TX PLL (index 0) then RX PLL (index 1)
-		await this.programFPGAPLL(0, pllInputFreq, [pllInputFreq, pllInputFreq], [0, txPhase]);
-		await this.programFPGAPLL(1, pllInputFreq, [pllInputFreq, pllInputFreq], [0, rxPhase]);
+		await this.programFPGAPLL(0, pllInputFreq, [pllOutputFreq, pllOutputFreq], [0, txPhase]);
+		await this.programFPGAPLL(1, pllInputFreq, [pllOutputFreq, pllOutputFreq], [0, rxPhase]);
 	}
 
 	private async programFPGAPLL(pllIndex: number, inputFreq: number, clockFreqs: number[], clockPhases: number[] = []): Promise<void> {
@@ -785,16 +865,12 @@ class LimeSDR {
 
 	async setSampleRate(rate: number): Promise<void> {
 		this.currentSampleRate = rate;
-		// CGEN frequency = sample_rate * 4 (4x oversampling for SISO DDR)
-		await this.setCGENFrequency(rate * 4);
-		// Update analog filter bandwidth to match
+		// MIMO mode: need rate * 8 (interface alternates chA/chB each clock)
+		await this.setCGENFrequency(rate * 8);
 		await this.setAnalogBandwidth(rate);
-		// Update RxTSP decimation
 		await this.configureRxTSP();
-		// Reconfigure FPGA PLL
-		await this.configureFPGAPLL();
-		// Reconfigure LML clocks
 		await this.configureLML();
+		await this.configureFPGAPLL();
 	}
 
 	// ── Streaming ───────────────────────────────────────────────
@@ -819,13 +895,14 @@ class LimeSDR {
 		// 4. Reset USB streaming FIFOs (0x00 = stream buffer reset)
 		await this.sendCommand(0x40, new Uint8Array([0x00]));
 
-		// 5. Configure interface mode: SISO DDR (0x0040), 16-bit samples (0x00)
-		await this.writeFPGA(FPGA_REG_IFACE, 0x0040);
-		await this.writeFPGA(FPGA_REG_CH_EN, 0x0001);  // Channel 0
+		// 5. Configure interface mode: MIMO (0x0100)
+		// MIMO mode properly captures I/Q from separate DDR edges
+		await this.writeFPGA(FPGA_REG_IFACE, 0x0100);
+		await this.writeFPGA(FPGA_REG_CH_EN, 0x0001);  // Channel A only
 
-		// 6. Enable RX and TX streaming (TX needed for clock routing)
+		// 6. Enable RX streaming only (per LimeSuite StartStreaming — TX_EN not needed)
 		const ctrl2 = await this.readFPGA(FPGA_REG_CTRL);
-		await this.writeFPGA(FPGA_REG_CTRL, ctrl2 | 0x0003); // RX_EN + TX_EN
+		await this.writeFPGA(FPGA_REG_CTRL, ctrl2 | 0x0001); // RX_EN only
 
 		// 7. Post-start counter pulse (bits 3 and 1, i.e. 5<<1 = 0x0A)
 		reg9 = await this.readFPGA(FPGA_REG_TSTAMP);
@@ -837,9 +914,8 @@ class LimeSDR {
 		await this.writeLMS7002(REG_RESET, reg20 & ~0xFFC0);  // Assert resets
 		await this.writeLMS7002(REG_RESET, reg20 | 0xFFC0);   // Release resets
 
-		// 9. Re-enable RXTSP after logic reset
-		await this.modifyReg(REG_RXTSP_CFG, 0, 0, 1);
-		await this.writeLMS7002(REG_RXTSP_BYP, 0x007B); // Bypass all except DC correction
+		// 9. Re-enable RXTSP after logic reset (reset may revert registers)
+		await this.configureRxTSP();
 
 		console.log(`LimeSDR: streaming started (${NUM_TRANSFERS} transfers, ${TRANSFER_SIZE} bytes each)`);
 
@@ -847,6 +923,7 @@ class LimeSDR {
 
 		const transfer = async (): Promise<void> => {
 			// Each concurrent transfer gets its own output buffer (avoids race condition)
+			// ch_en=1 MIMO: non-interleaved [I,Q,I,Q,...], 4 bytes per sample
 			const samplesPerTransfer = Math.floor(TRANSFER_SIZE / STREAM_PKT_SIZE) * (STREAM_PAYLOAD / 4);
 			const outBuf = new Int8Array(samplesPerTransfer * 2);
 
@@ -863,9 +940,50 @@ class LimeSDR {
 						firstPacketLogged = true;
 						const hdr = Array.from(raw.slice(0, 16)).map(b => b.toString(16).padStart(2, '0')).join(' ');
 						console.log(`LimeSDR: first USB transfer: ${raw.length} bytes, header: ${hdr}`);
-						// Log a few raw sample bytes
-						const sampleBytes = Array.from(raw.slice(16, 32)).map(b => b.toString(16).padStart(2, '0')).join(' ');
-						console.log(`LimeSDR: first sample bytes: ${sampleBytes}`);
+
+						// IQ diagnostic: check if I and Q are independent or identical
+						// Per LimeSuite memcpy(complex16_t): word[0]=I, word[1]=Q
+						const diagDV = new DataView(raw.buffer, raw.byteOffset, raw.byteLength);
+						let sumII = 0, sumQQ = 0, sumIQ = 0;
+						const pairs: string[] = [];
+						const numDiag = Math.min(500, Math.floor((raw.length - STREAM_HDR_SIZE) / 4));
+						for (let k = 0; k < numDiag; k++) {
+							const off = STREAM_HDR_SIZE + k * 4;
+							const iVal = diagDV.getInt16(off,     true);  // word[0] = I
+							const qVal = diagDV.getInt16(off + 2, true);  // word[1] = Q
+							sumII += iVal * iVal;
+							sumQQ += qVal * qVal;
+							sumIQ += iVal * qVal;
+							if (k < 10) pairs.push(`(I=${iVal},Q=${qVal})`);
+						}
+						const iRms = Math.sqrt(sumII / numDiag);
+						const qRms = Math.sqrt(sumQQ / numDiag);
+						const corr = sumII > 0 && sumQQ > 0 ? sumIQ / Math.sqrt(sumII * sumQQ) : 0;
+						console.log(`LimeSDR IQ diag: corr=${corr.toFixed(4)}, I_rms=${iRms.toFixed(0)}, Q_rms=${qRms.toFixed(0)}`);
+						console.log(`LimeSDR first IQ (word[0]=I, word[1]=Q): ${pairs.join(' ')}`);
+
+						// Auto-calibrate IQ gain balance via RxTSP gain corrector
+						const ratio = iRms > 0 && qRms > 0 ? iRms / qRms : 1;
+						if (ratio > 1.5 || ratio < 0.67) {
+							let gcorrI = 2047, gcorrQ = 2047;
+							if (ratio > 1) {
+								// I is stronger — reduce I to match Q
+								gcorrI = Math.max(1, Math.round(2047 / ratio));
+							} else {
+								// Q is stronger — reduce Q to match I
+								gcorrQ = Math.max(1, Math.round(2047 * ratio));
+							}
+							try {
+								await this.writeLMS7002(0x0402, gcorrI);  // GCORRI
+								await this.writeLMS7002(0x0401, gcorrQ);  // GCORRQ
+								// Enable gain corrector: clear GC_BYP (bit 1) in 0x040C
+								const bypReg = await this.readLMS7002(0x040C);
+								await this.writeLMS7002(0x040C, bypReg & ~0x0002);
+								console.log(`LimeSDR: IQ auto-cal: GCORRI=${gcorrI}, GCORRQ=${gcorrQ}, ratio=${ratio.toFixed(2)}`);
+							} catch (e) {
+								console.warn('LimeSDR: IQ auto-cal failed:', e);
+							}
+						}
 					}
 
 					const numPackets = Math.floor(raw.length / STREAM_PKT_SIZE);
@@ -874,9 +992,9 @@ class LimeSDR {
 					let outPos = 0;
 					for (let pkt = 0; pkt < numPackets; pkt++) {
 						const base = pkt * STREAM_PKT_SIZE + STREAM_HDR_SIZE;
+						// ch_en=1 MIMO: non-interleaved [I16, Q16, I16, Q16, ...]
 						for (let j = 0; j < STREAM_PAYLOAD; j += 4) {
-							// 12-bit samples left-justified in 16-bit LE → right-shift by 8 for Int8
-							outBuf[outPos++] = dv.getInt16(base + j, true) >> 8;     // I
+							outBuf[outPos++] = dv.getInt16(base + j,     true) >> 8; // I
 							outBuf[outPos++] = dv.getInt16(base + j + 2, true) >> 8; // Q
 						}
 					}
