@@ -22,7 +22,7 @@ const IF_RATES: Record<string, number> = {
     dsb: 24000,
     cw: 3000,
     raw: 48000,
-    dsd: 9600,
+    dsd: 48000,
 };
 const AUDIO_RATE = 48000;
 
@@ -345,9 +345,12 @@ function processVfoAudio(chunkLenBytes: number, params: any): Float32Array | nul
             }
         }
         else if (mode === 'dsd') {
-            // DSD mode: FM demod the IQ at 9600 Hz, then feed to DSD decoder
+            // DSD mode: FM demod the IQ at 9600 Hz, then feed to DSD decoder.
+            // Voice audio arrives in bursty chunks (one DMR superframe = 320ms).
+            // The main thread's ring buffer handles variable-size chunks, so we
+            // return decoded audio directly when available, silence otherwise.
             if (dsdDecoder && dsdFmDemod && dsdAudioResampler) {
-                // FM discriminator on IQ at IF rate (9600 Hz)
+                // FM discriminator on IQ at IF rate (48 kHz)
                 const fmAudio = new Float32Array(numDemodSamples);
                 dsdFmDemod.process(_ddcOut.subarray(0, numOutValues), fmAudio);
 
@@ -367,21 +370,15 @@ function processVfoAudio(chunkLenBytes: number, params: any): Float32Array | nul
                             if (resampled[i] > 1.0) resampled[i] = 1.0;
                             else if (resampled[i] < -1.0) resampled[i] = -1.0;
                         }
-                        // DEBUG: log DSD audio output stats
-                        if (typeof (self as any)._dsdDbgCnt === 'undefined') (self as any)._dsdDbgCnt = 0;
-                        (self as any)._dsdDbgCnt++;
-                        if ((self as any)._dsdDbgCnt % 10 === 1) {
-                            let maxVal = 0;
-                            for (let j = 0; j < resampled.length; j++) if (Math.abs(resampled[j]) > maxVal) maxVal = Math.abs(resampled[j]);
-                            console.log(`[DSD] audio out: 8k=${dsdAudioAccumLen} → 48k=${resampled.length} samples, peak=${maxVal.toFixed(4)}, chunk#${(self as any)._dsdDbgCnt}`);
-                        }
                         return resampled.slice();
                     }
                 }
 
-                // No decoded voice this chunk — return null so the audio
-                // player doesn't schedule silence that disrupts timing.
-                return null;
+                // No decoded voice this chunk — return silence (not null!) to keep
+                // the audio stream continuous. Returning null would cause the main
+                // thread's nextPlayTime to fall behind, breaking audio scheduling.
+                const expectedOut = numDemodSamples; // 48kHz IF → 48kHz output = 1:1
+                return new Float32Array(expectedOut);
             }
             return null;
         }

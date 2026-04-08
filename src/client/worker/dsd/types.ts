@@ -100,7 +100,7 @@ export const SYNC_LEN_18 = 18; // NXDN
 
 // ── Symbol rate and IF sample rate ───────────────────────────────────
 export const DSD_SYMBOL_RATE = 4800;
-export const DSD_IF_RATE = 9600; // 2 samples per symbol
+export const DSD_IF_RATE = 48000; // 10 samples per symbol (matches SDR++ Brown)
 export const DSD_AUDIO_RATE = 8000; // mbelib output rate
 export const MBE_SAMPLES_PER_FRAME = 160; // 160 samples @ 8 kHz = 20 ms
 

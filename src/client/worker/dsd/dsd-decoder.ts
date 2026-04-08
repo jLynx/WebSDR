@@ -53,13 +53,32 @@ const SYNC_PATTERNS: SyncPattern[] = [
 
 /** Maximum bit errors allowed when matching sync words. */
 const SYNC_TOLERANCE_24 = 2; // For 24-dibit syncs (DMR, P25, D-STAR)
+const SYNC_TOLERANCE_24_VOICE = 2; // Same tolerance for voice — TDMA validation catches false positives
 const SYNC_TOLERANCE_18 = 1; // Stricter for 18-dibit syncs (NXDN) — fewer bits = more false positives
+
+/**
+ * Collapse a dibit character to its polarity, matching SDR++ Brown's
+ * `(dibit | 1) + 48` convention: positive dibits (0,1) → '1', negative (2,3) → '3'.
+ * This is critical for sync detection robustness: sync words only use the
+ * outermost ±3 levels, but after pulse shaping and noise, some may be received
+ * as the inner ±1 levels. Collapsing polarity avoids counting these as mismatches.
+ */
+function collapsePolarity(ch: string): string {
+	return (ch === '0' || ch === '1') ? '1' : '3';
+}
 
 /**
  * Try to match the sync word in the dibit history buffer.
  * Prioritizes longer (24-dibit) syncs over shorter (18-dibit) NXDN.
  * Uses stricter tolerance for shorter sync words to reduce false positives.
+ *
+ * Comparison uses collapsed polarity (positive/negative only, not exact level)
+ * to match SDR++ Brown's approach and avoid missing syncs when outer symbols
+ * are received as inner symbols.
  */
+/** Error count from the last successful matchSync call (for diagnostics). */
+let _lastMatchErrors = 0;
+
 function matchSync(dibitHistory: string, lastMode: DSDMode): SyncType {
 	const len = dibitHistory.length;
 
@@ -68,15 +87,19 @@ function matchSync(dibitHistory: string, lastMode: DSDMode): SyncType {
 		if (sp.len !== 24) continue;
 		if (len < 24) continue;
 		const start = len - 24;
+		// Voice syncs use stricter tolerance: false voice matches trigger expensive
+		// superframe reads (1494 dibits for DMR) that produce garbled audio.
+		const tolerance = isVoiceSync(sp.type) ? SYNC_TOLERANCE_24_VOICE : SYNC_TOLERANCE_24;
 		let mismatches = 0;
 		let matched = true;
 		for (let i = 0; i < 24; i++) {
-			if (dibitHistory[start + i] !== sp.pattern[i]) {
+			// Collapse polarity: 0,1 → '1' (positive); 2,3 → '3' (negative)
+			if (collapsePolarity(dibitHistory[start + i]) !== sp.pattern[i]) {
 				mismatches++;
-				if (mismatches > SYNC_TOLERANCE_24) { matched = false; break; }
+				if (mismatches > tolerance) { matched = false; break; }
 			}
 		}
-		if (matched) return sp.type;
+		if (matched) { _lastMatchErrors = mismatches; return sp.type; }
 	}
 
 	// Second pass: try 18-dibit syncs (NXDN) — only if we're not already locked to DMR/P25/D-STAR
@@ -90,12 +113,12 @@ function matchSync(dibitHistory: string, lastMode: DSDMode): SyncType {
 			let mismatches = 0;
 			let matched = true;
 			for (let i = 0; i < 18; i++) {
-				if (dibitHistory[start + i] !== sp.pattern[i]) {
+				if (collapsePolarity(dibitHistory[start + i]) !== sp.pattern[i]) {
 					mismatches++;
 					if (mismatches > SYNC_TOLERANCE_18) { matched = false; break; }
 				}
 			}
-			if (matched) return sp.type;
+			if (matched) { _lastMatchErrors = mismatches; return sp.type; }
 		}
 	}
 
@@ -128,6 +151,14 @@ export class DSDDecoder {
 	private modeLockCount = 0;
 	/** Locked mode: once we see 3+ consecutive syncs of the same mode, lock to it */
 	private lockedMode: DSDMode = 'unknown';
+
+	/** Last DMR DATA sync position — used for TDMA timing validation of voice syncs */
+	private dmrLastDataSyncPos = -1;
+	/** True until the first voice superframe is decoded after sync acquisition.
+	 *  SDR++ Brown skips burst 0 frames 1+2 only for the very first superframe
+	 *  because its history buffer uses 2-level data. Our buffer has full 4-level
+	 *  data, so we only skip on the first frame to match the reference behavior. */
+	private dmrFirstVoiceFrame = true;
 
 	// Audio output accumulator
 	private audioAccum: Float32Array;
@@ -273,6 +304,8 @@ export class DSDDecoder {
 				console.log(`[DSD-dec] mode unlock: ${this.lockedMode} → unknown (no sync for 2s)`);
 				this.lockedMode = 'unknown';
 				this.modeLockCount = 0;
+				this.dmrLastDataSyncPos = -1;
+				this.dmrFirstVoiceFrame = true;
 			}
 		}
 
@@ -284,8 +317,37 @@ export class DSDDecoder {
 
 			// Mode locking: if we've locked to a mode, reject syncs from other protocols
 			if (this.lockedMode !== 'unknown' && mode !== this.lockedMode) {
-				// Reject — this is likely a false positive
-				return;
+				// Exception: 24-dibit syncs (DMR, P25, D-STAR) override NXDN (18-dibit) locks.
+				// NXDN's shorter sync word is far more prone to false positives on DMR idle
+				// channels, so a 24-dibit match is inherently more trustworthy.
+				if (this.lockedMode === 'nxdn' && mode !== 'nxdn') {
+					console.log(`[DSD-dec] NXDN lock overridden by ${mode} (24-dibit sync is more reliable)`);
+					this.lockedMode = 'unknown';
+					this.modeLockCount = 0;
+				} else {
+					// Reject — this is likely a false positive
+					return;
+				}
+			}
+
+			// DMR VOICE TDMA validation: reject voice syncs that don't align with
+			// the established TDMA frame timing. False voice matches at random
+			// positions trigger 1494-dibit superframe reads producing garbled audio.
+			// Threshold scales with distance to tolerate clock drift (~1-2 dibits per timeslot).
+			if (mode === 'dmr' && isVoiceSync(syncType) &&
+				this.dmrLastDataSyncPos >= 0 && this.modeLockCount >= 5) {
+				const dist = this.dibitBufPos - this.dmrLastDataSyncPos;
+				const timeslots = Math.round(dist / 144);
+				if (timeslots > 0) {
+					const expected = timeslots * 144;
+					const residual = Math.abs(dist - expected);
+					// Allow 2 dibits of clock drift per timeslot, minimum 12
+					const threshold = Math.max(12, timeslots * 2);
+					if (residual > threshold) {
+						console.log(`[DSD-dec] DMR VOICE rejected: TDMA misaligned (dist=${dist}, expected=${expected}, residual=${residual}, threshold=${threshold}, errors=${_lastMatchErrors})`);
+						return;
+					}
+				}
 			}
 
 			this.currentSync = syncType;
@@ -306,6 +368,11 @@ export class DSDDecoder {
 				this.lockedMode = mode;
 			}
 
+			// Track DMR DATA sync positions for TDMA timing reference
+			if (mode === 'dmr' && !isVoiceSync(syncType)) {
+				this.dmrLastDataSyncPos = this.dibitBufPos;
+			}
+
 			this.status.mode = mode;
 			this.status.synced = true;
 			this.status.syncName = syncTypeLabel(syncType);
@@ -317,7 +384,7 @@ export class DSDDecoder {
 			this.frameDataRead = 0;
 			this.frameStart = this.dibitBufPos;
 
-			console.log(`[DSD-dec] SYNC #${this._dbgSyncCount}: ${syncTypeLabel(syncType)} (${mode}), pos=${this.dibitBufPos}, frameStart=${this.frameStart}, frameLen=${this.frameDataRemaining}, histLen=${this.dibitHistory.length}, lock=${this.lockedMode}/${this.modeLockCount}`);
+			console.log(`[DSD-dec] SYNC #${this._dbgSyncCount}: ${syncTypeLabel(syncType)} (${mode}), pos=${this.dibitBufPos}, frameStart=${this.frameStart}, frameLen=${this.frameDataRemaining}, histLen=${this.dibitHistory.length}, lock=${this.lockedMode}/${this.modeLockCount}, errors=${_lastMatchErrors}`);
 			this.dibitHistory = '';
 		}
 	}
@@ -463,11 +530,13 @@ export class DSDDecoder {
 		};
 
 		// Burst 0: voice data straddles the sync word.
-		// SDR++ Brown skips frames 1+2 of the first burst because data
-		// received before the first sync may not be valid (firstframe logic).
-		// The sync/EMB is at startPos-24, which is the sync we just detected,
-		// so we know it's VOICE — no mute check needed for burst 0.
-		decodeBurst(startPos - 78, startPos, 0, /* skipFrames12 */ true);
+		// SDR++ Brown skips frames 1+2 only on the very first superframe after
+		// carrier detect (firstframe flag), because its history buffer uses 2-level
+		// quantized data. Our dibit buffer has full 4-level data, so we only need
+		// to skip on the actual first frame after acquisition.
+		const skipBurst0 = this.dmrFirstVoiceFrame;
+		this.dmrFirstVoiceFrame = false;
+		decodeBurst(startPos - 78, startPos, 0, skipBurst0);
 
 		// Bursts 1-5: at known offsets after burst 0
 		for (let n = 1; n <= 5; n++) {
@@ -642,8 +711,9 @@ export class DSDDecoder {
 					// Total: 54 + 1440 = 1494 dibits
 					return 1494;
 				}
-				// DATA burst: just need the 2nd half after sync
-				return 54;
+				// DATA burst: skip 2nd half (54) + other slot CACH (12) + other slot 1st half (54)
+				// Matches SDR++ Brown's skipDibit(120) after data — avoids false syncs in other slot's data
+				return 120;
 			case 'p25':
 				return P25_NID_DIBITS + P25_LDU_BODY_DIBITS; // ~752 dibits
 			case 'dstar':
@@ -675,6 +745,8 @@ export class DSDDecoder {
 		this.lockedMode = 'unknown';
 		this.modeLockCount = 0;
 		this._lastSyncTime = 0;
+		this.dmrLastDataSyncPos = -1;
+		this.dmrFirstVoiceFrame = true;
 		if (this.mbelibReady) resetMbe();
 		this.onStatus(this.status);
 	}
