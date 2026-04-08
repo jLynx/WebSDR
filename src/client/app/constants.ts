@@ -56,4 +56,5 @@ export const MODE_DEFAULTS: Record<string, { bandwidth: number; snapInterval: nu
 	dsb: { bandwidth: 4600, snapInterval: 100, deEmphasis: 'none', lowPass: false },
 	cw: { bandwidth: 200, snapInterval: 10, deEmphasis: 'none', lowPass: false },
 	raw: { bandwidth: 48000, snapInterval: 2500, deEmphasis: 'none', lowPass: false },
+	dsd: { bandwidth: 12500, snapInterval: 2500, deEmphasis: 'none', lowPass: false },
 };

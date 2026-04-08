@@ -220,7 +220,7 @@
 					</div>
 					<div class="panel-body panel-condensed" v-show="!collapsedPanels['vfo-' + i]">
 						<div class="mode-grid">
-							<label class="mode-radio" v-for="m in ['nfm','am','usb','lsb','wfm','dsb','cw','raw']" :key="m">
+							<label class="mode-radio" v-for="m in ['nfm','am','usb','lsb','wfm','dsb','cw','raw','dsd']" :key="m">
 								<input type="radio" :value="m" v-model="vfo.mode" :name="'mode-' + i" @change="applyModeDefaults(i)">
 								<span class="mode-btn">{{ m.toUpperCase() }}</span>
 							</label>
@@ -304,6 +304,51 @@
 								<span class="checkmark"></span>
 								Decode POCSAG
 							</label>
+						</div>
+
+						<!-- DSD status display (SDR++ Brown style) -->
+						<div class="dsd-status-panel" v-if="vfo.mode === 'dsd'" style="padding:4px 8px;font-size:11px;font-family:monospace;line-height:1.6;background:rgba(0,0,0,0.3);border-radius:4px;margin:4px 0;">
+							<!-- Mode line -->
+							<div style="display:flex;align-items:center;gap:6px;">
+								<span :style="{ width:'8px',height:'8px',borderRadius:'50%',display:'inline-block',flexShrink:0,background: dsdStatus[i]?.synced ? '#44cc44' : '#666' }"></span>
+								<span style="font-weight:700;color:#fff;">Mode: {{ dsdStatus[i]?.mode?.toUpperCase() || 'SCANNING...' }}</span>
+								<span v-if="dsdStatus[i]?.syncName" style="opacity:0.5;font-size:10px;">{{ dsdStatus[i].syncName }}</span>
+							</div>
+							<!-- DMR details -->
+							<template v-if="dsdStatus[i]?.mode === 'dmr'">
+								<div v-if="dsdStatus[i]?.slot0Burst" style="color:#aaa;">SLOT0: {{ dsdStatus[i].slot0Burst }}</div>
+								<div v-if="dsdStatus[i]?.slot1Burst" style="color:#aaa;">SLOT1: {{ dsdStatus[i].slot1Burst }}</div>
+								<div v-if="dsdStatus[i]?.colorCode != null" style="color:#aaa;">CC: {{ dsdStatus[i].colorCode }}</div>
+							</template>
+							<!-- P25 details -->
+							<template v-if="dsdStatus[i]?.mode === 'p25'">
+								<div style="color:#aaa;">
+									NAC: {{ dsdStatus[i]?.nac != null ? '0x' + dsdStatus[i].nac.toString(16).toUpperCase().padStart(3,'0') : '---' }}
+									<span v-if="dsdStatus[i]?.duid" style="margin-left:8px;">DUID: {{ dsdStatus[i].duid }}</span>
+								</div>
+								<div v-if="dsdStatus[i]?.tg" style="color:#aaa;">TG: {{ dsdStatus[i].tg }} <span v-if="dsdStatus[i]?.src" style="margin-left:8px;">SRC: {{ dsdStatus[i].src }}</span></div>
+								<div v-if="dsdStatus[i]?.algid != null" style="color:#aaa;">ALGID: 0x{{ dsdStatus[i].algid.toString(16).toUpperCase().padStart(2,'0') }}</div>
+							</template>
+							<!-- D-STAR details -->
+							<template v-if="dsdStatus[i]?.mode === 'dstar'">
+								<div v-if="dsdStatus[i]?.callsign" style="color:#aaa;">Callsign: {{ dsdStatus[i].callsign }}</div>
+							</template>
+							<!-- NXDN details -->
+							<template v-if="dsdStatus[i]?.mode === 'nxdn'">
+								<div v-if="dsdStatus[i]?.nxdnType" style="color:#aaa;">Type: {{ dsdStatus[i].nxdnType }}</div>
+							</template>
+							<!-- MBE status -->
+							<div style="display:flex;align-items:center;gap:6px;margin-top:2px;">
+								<span :style="{ color: dsdStatus[i]?.mbeDecoding ? '#44cc44' : '#ff6644' }">
+									{{ dsdStatus[i]?.mbeDecoding ? 'VOICE' : (dsdStatus[i]?.synced ? 'NO AUDIO' : 'IDLE') }}
+								</span>
+								<span v-if="dsdStatus[i]?.mbeErrors" style="color:#88aacc;letter-spacing:1px;">{{ dsdStatus[i].mbeErrors }}</span>
+							</div>
+							<div v-if="dsdStatus[i]?.voiceFrameCount" style="color:#666;font-size:10px;">Frames: {{ dsdStatus[i].voiceFrameCount }}</div>
+							<!-- mbelib warning -->
+							<div v-if="dsdStatus[i]?.mbelibLoaded === false && dsdStatus[i]?.synced" style="color:#ff8844;font-size:10px;margin-top:2px;">
+								mbelib WASM not loaded — voice decoding disabled
+							</div>
 						</div>
 
 						<div class="form-row" v-if="vfo.mode === 'wfm' && vfo.rds" style="align-items: center;">
@@ -739,7 +784,7 @@
 						<div class="bm-edit-row">
 							<label class="bm-edit-label">Mode</label>
 							<div class="mode-grid bm-mode-grid">
-								<label class="mode-radio" v-for="m in ['nfm','am','usb','lsb','wfm','dsb','cw','raw']" :key="m">
+								<label class="mode-radio" v-for="m in ['nfm','am','usb','lsb','wfm','dsb','cw','raw','dsd']" :key="m">
 									<input type="radio" :value="m" v-model="bookmarkEdit.mode" name="bm-edit-mode">
 									<span class="mode-btn">{{ m.toUpperCase() }}</span>
 								</label>

@@ -48,6 +48,14 @@ export interface VfoState {
 	lastBandwidth?: number;
 	audioTarget?: Float32Array;
 	scratchBuf?: Float32Array;
+	/** DSD decoder instance (when mode === 'dsd') */
+	dsdDecoder?: any;
+	/** Resampler 8000 → 48000 Hz for DSD audio output */
+	dsdAudioResampler?: any;
+	/** Accumulator for DSD decoded audio at 8 kHz */
+	dsdAudioBuf?: Float32Array;
+	/** Number of valid samples in dsdAudioBuf */
+	dsdAudioBufLen?: number;
 }
 
 export interface PerfCounters {
@@ -122,6 +130,7 @@ export const IF_RATES: Record<string, number> = {
 	dsb: 24000,
 	cw: 3000,
 	raw: 48000,
+	dsd: 9600,
 };
 
 export const AUDIO_RATE = 48000;

@@ -74,6 +74,7 @@ export function createAppData() {
 			panelOpen: false,
 			log: [] as Array<{ time: string; freq: string; vfoIndex: number; capcode: string; type: string; text: string; baud: number }>,
 		},
+		dsdStatus: [] as Array<{ mode: string; synced: boolean; syncName?: string; mbelibLoaded?: boolean; mbeDecoding?: boolean; mbeErrors?: string; voiceFrameCount?: number; colorCode?: number; slot?: number; slot0Burst?: string; slot1Burst?: string; nac?: number; duid?: string; src?: number; tg?: number; emr?: boolean; algid?: number; callsign?: string; nxdnType?: string } | null>,
 		bookmarkCategories: BOOKMARK_CATEGORIES,
 		bookmarkCategoryFilter: '',
 		bookmarkSearch: '',
