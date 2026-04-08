@@ -74,6 +74,11 @@ export function createAppData() {
 			panelOpen: false,
 			log: [] as Array<{ time: string; freq: string; vfoIndex: number; capcode: string; type: string; text: string; baud: number }>,
 		},
+		rds: {
+			panelOpen: false,
+			stations: {} as Record<number, { ps: string; rt: string; pi: string; pty: number; ptyLabel: string; tp: boolean; ta: boolean; freq: string }>,
+			log: [] as Array<{ time: string; field: string; value: string; freq: string; vfoIndex: number }>,
+		},
 		bookmarkCategories: BOOKMARK_CATEGORIES,
 		bookmarkCategoryFilter: '',
 		bookmarkSearch: '',

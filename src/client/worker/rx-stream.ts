@@ -34,7 +34,8 @@ export async function startRxStream(
 	spectrumCallback: any,
 	audioCallback: any,
 	whisperCallback: any,
-	pocsagCallback: any
+	pocsagCallback: any,
+	rdsCallback: any
 ): Promise<void> {
 	if (_streamStarting) return;
 	_streamStarting = true;
@@ -87,7 +88,7 @@ export async function startRxStream(
 		if (backend.ddcs) backend.ddcs.forEach((d: any) => { try { d.free(); } catch (_) { } });
 
 		// Initialize dynamic VFO arrays (start with one VFO)
-		const defaultVfoParams: VfoParams = { freq: centerFreq, mode: 'wfm', enabled: false, deEmphasis: '50us', squelchEnabled: false, squelchLevel: -100.0, lowPass: true, highPass: false, bandwidth: initialBandwidth, volume: 50, pocsag: false };
+		const defaultVfoParams: VfoParams = { freq: centerFreq, mode: 'wfm', enabled: false, deEmphasis: '50us', squelchEnabled: false, squelchLevel: -100.0, lowPass: true, highPass: false, bandwidth: initialBandwidth, volume: 50, pocsag: false, rds: false, rdsRegion: 'eu' };
 		backend.vfoParams = [{ ...defaultVfoParams }];
 
 		const MAX_USB_SAMPLES = 131072;
@@ -108,6 +109,7 @@ export async function startRxStream(
 		const makeVfoState = (): VfoState => ({
 			squelchOpen: false,
 			pocsagDecoder: null,
+			rdsDecoder: null,
 			audioQueue: new Float32Array(32768),
 			audioQueueLen: 0,
 		});
@@ -120,6 +122,10 @@ export async function startRxStream(
 				const msg = e.data;
 				if (msg.type === "audio") {
 					backend._handleWorkerAudio!(index, msg);
+				} else if (msg.type === "rds") {
+					// Decoded RDS message from dsp-worker — just forward to main thread
+					const params = backend.vfoParams![index];
+					if (rdsCallback && params) rdsCallback(index, params.freq, msg.msg);
 				} else if (msg.type === "error") {
 					console.error(`[DSP Worker ${index}] Error:`, msg.error);
 				}
@@ -535,6 +541,11 @@ export async function startRxStream(
 					state.pocsagDecoder.process(out);
 				} else if (!params.pocsag && state.pocsagDecoder) {
 					state.pocsagDecoder = null;
+				}
+
+				// Clean up RDS decoder when disabled
+				if ((!params.rds || params.mode !== 'wfm') && state.rdsDecoder) {
+					state.rdsDecoder = null;
 				}
 			}
 

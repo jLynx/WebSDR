@@ -205,7 +205,8 @@ export const connectionMethods = {
 				Comlink.proxy((spectrumData: any) => this.drawSpectrum(spectrumData)),
 				Comlink.proxy((audioSamples: any) => this.playAudio(audioSamples)),
 				Comlink.proxy((vfoIndex: number, freq: number, samples: any) => this._feedWhisperVfo(vfoIndex, freq, samples)),
-				Comlink.proxy((vfoIndex: number, freq: number, msg: any) => this._onPocsagMessage(vfoIndex, freq, msg))
+				Comlink.proxy((vfoIndex: number, freq: number, msg: any) => this._onPocsagMessage(vfoIndex, freq, msg)),
+				Comlink.proxy((vfoIndex: number, freq: number, msg: any) => this._onRdsMessage(vfoIndex, freq, msg))
 			);
 		} catch (e: any) {
 			console.error('Error starting RX stream:', e);
