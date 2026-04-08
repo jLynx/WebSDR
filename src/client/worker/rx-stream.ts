@@ -34,7 +34,8 @@ export async function startRxStream(
 	spectrumCallback: any,
 	audioCallback: any,
 	whisperCallback: any,
-	pocsagCallback: any
+	pocsagCallback: any,
+	dsdStatusCallback?: any
 ): Promise<void> {
 	if (_streamStarting) return;
 	_streamStarting = true;
@@ -120,6 +121,8 @@ export async function startRxStream(
 				const msg = e.data;
 				if (msg.type === "audio") {
 					backend._handleWorkerAudio!(index, msg);
+				} else if (msg.type === "dsd_status") {
+					if (dsdStatusCallback) dsdStatusCallback(index, msg.status);
 				} else if (msg.type === "error") {
 					console.error(`[DSP Worker ${index}] Error:`, msg.error);
 				}

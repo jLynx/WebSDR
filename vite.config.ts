@@ -40,7 +40,7 @@ function postBuildPlugin(): Plugin {
 								fileName: () => jsName,
 							},
 							rollupOptions: {
-								external: [/\/hackrf-web\/pkg\//],
+								external: [/\/hackrf-web\/pkg\//, /\/lib\/mbelib\//],
 							},
 							minify: true,
 						},
@@ -133,6 +133,16 @@ function postBuildPlugin(): Plugin {
 					fs.copyFileSync(path.join(wasmSrc, file), path.join(wasmDest, file));
 				}
 			}
+
+			// --- Copy mbelib WASM files ---
+			const mbelibSrc = path.resolve(__dirname, 'public/lib/mbelib');
+			const mbelibDest = path.resolve(distDir, 'lib/mbelib');
+			if (fs.existsSync(mbelibSrc)) {
+				fs.mkdirSync(mbelibDest, { recursive: true });
+				for (const file of fs.readdirSync(mbelibSrc)) {
+					fs.copyFileSync(path.join(mbelibSrc, file), path.join(mbelibDest, file));
+				}
+			}
 		},
 	};
 }
@@ -145,6 +155,7 @@ export default defineConfig({
 		rollupOptions: {
 			external: [
 				/\/hackrf-web\/pkg\//,
+				/\/lib\/mbelib\//,
 			],
 		},
 	},
@@ -153,6 +164,7 @@ export default defineConfig({
 		rollupOptions: {
 			external: [
 				/\/hackrf-web\/pkg\//,
+				/\/lib\/mbelib\//,
 			],
 		},
 	},

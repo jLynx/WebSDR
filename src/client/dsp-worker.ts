@@ -1,5 +1,9 @@
 import init, { DspProcessor, set_panic_hook, alloc_iq_buffer, free_iq_buffer } from "/hackrf-web/pkg/hackrf_web.js";
 import { RationalResampler } from './worker/dsp-pipeline';
+import { DSDDecoder } from './worker/dsd/dsd-decoder';
+import { FMDiscriminator } from './worker/dsd/dsd-dsp';
+import { DSD_IF_RATE, DSD_AUDIO_RATE } from './worker/dsd/types';
+import type { DSDStatus } from './worker/dsd/types';
 
 // --- Worker State ---
 let wasmInitPromise: Promise<void> | null = null;
@@ -18,6 +22,7 @@ const IF_RATES: Record<string, number> = {
     dsb: 24000,
     cw: 3000,
     raw: 48000,
+    dsd: 48000,
 };
 const AUDIO_RATE = 48000;
 
@@ -39,6 +44,13 @@ async function startup(): Promise<void> {
 }
 
 let systemSampleRate = 2000000;
+
+// DSD decoder state (per-worker, one DSD decoder per VFO)
+let dsdDecoder: DSDDecoder | null = null;
+let dsdFmDemod: FMDiscriminator | null = null;
+let dsdAudioResampler: RationalResampler | null = null;
+let dsdAudioAccum: Float32Array = new Float32Array(0);
+let dsdAudioAccumLen = 0;
 
 self.onmessage = async (e: MessageEvent) => {
     const msg = e.data;
@@ -133,6 +145,40 @@ function configureDDC(params: any, systemCenterFreq: number): void {
         ddc.set_wfm_mode(true);
     } else {
         ddc.set_wfm_mode(false);
+    }
+
+    // Initialize or destroy DSD decoder based on mode
+    if (params.mode === 'dsd') {
+        if (!dsdDecoder) {
+            dsdAudioAccum = new Float32Array(16000);
+            dsdAudioAccumLen = 0;
+            dsdFmDemod = new FMDiscriminator();
+            dsdAudioResampler = new RationalResampler(DSD_AUDIO_RATE, AUDIO_RATE);
+            dsdDecoder = new DSDDecoder(
+                (audio: Float32Array) => {
+                    // Accumulate 8 kHz DSD audio
+                    if (dsdAudioAccumLen + audio.length > dsdAudioAccum.length) {
+                        const newBuf = new Float32Array(dsdAudioAccum.length * 2);
+                        newBuf.set(dsdAudioAccum.subarray(0, dsdAudioAccumLen));
+                        dsdAudioAccum = newBuf;
+                    }
+                    dsdAudioAccum.set(audio, dsdAudioAccumLen);
+                    dsdAudioAccumLen += audio.length;
+                },
+                (status: DSDStatus) => {
+                    // Post DSD status to main thread
+                    self.postMessage({ type: 'dsd_status', status });
+                }
+            );
+        }
+    } else {
+        if (dsdDecoder) {
+            dsdDecoder.reset();
+            dsdDecoder = null;
+            dsdFmDemod = null;
+            dsdAudioResampler = null;
+            dsdAudioAccumLen = 0;
+        }
     }
 
     // Apply UI audio filters (High Pass 300Hz, Low Pass BW/2)
@@ -297,6 +343,44 @@ function processVfoAudio(chunkLenBytes: number, params: any): Float32Array | nul
                 const agcScale = vfoState.agcGain > 1e-6 ? (0.5 / vfoState.agcGain) : 1.0;
                 audioDemodRateSamples[i] = demodSample * agcScale;
             }
+        }
+        else if (mode === 'dsd') {
+            // DSD mode: FM demod the IQ at 9600 Hz, then feed to DSD decoder.
+            // Voice audio arrives in bursty chunks (one DMR superframe = 320ms).
+            // The main thread's ring buffer handles variable-size chunks, so we
+            // return decoded audio directly when available, silence otherwise.
+            if (dsdDecoder && dsdFmDemod && dsdAudioResampler) {
+                // FM discriminator on IQ at IF rate (48 kHz)
+                const fmAudio = new Float32Array(numDemodSamples);
+                dsdFmDemod.process(_ddcOut.subarray(0, numOutValues), fmAudio);
+
+                // Reset accumulator before feeding decoder
+                dsdAudioAccumLen = 0;
+
+                // Feed FM audio to DSD decoder (emits 8 kHz audio via callback)
+                dsdDecoder.process(fmAudio);
+
+                // Resample DSD output: 8 kHz → 48 kHz
+                if (dsdAudioAccumLen > 0) {
+                    const dsdAudio8k = dsdAudioAccum.subarray(0, dsdAudioAccumLen);
+                    const resampled = dsdAudioResampler.process(dsdAudio8k);
+
+                    if (resampled.length > 0) {
+                        for (let i = 0; i < resampled.length; i++) {
+                            if (resampled[i] > 1.0) resampled[i] = 1.0;
+                            else if (resampled[i] < -1.0) resampled[i] = -1.0;
+                        }
+                        return resampled.slice();
+                    }
+                }
+
+                // No decoded voice this chunk — return silence (not null!) to keep
+                // the audio stream continuous. Returning null would cause the main
+                // thread's nextPlayTime to fall behind, breaking audio scheduling.
+                const expectedOut = numDemodSamples; // 48kHz IF → 48kHz output = 1:1
+                return new Float32Array(expectedOut);
+            }
+            return null;
         }
         else if (mode === 'raw') {
             for (let i = 0; i < numDemodSamples; i++) {

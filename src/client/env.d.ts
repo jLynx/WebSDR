@@ -85,6 +85,12 @@ declare module '/hackrf-web/pkg/hackrf_web.js' {
 	export function free_iq_buffer(ptr: number, size: number): void;
 }
 
+// mbelib WASM module (built via Emscripten, served from public/lib/mbelib/)
+declare module '/lib/mbelib/mbelib.js' {
+	const MbelibModule: () => Promise<any>;
+	export default MbelibModule;
+}
+
 // Cloudflare Worker types
 interface ExecutionContext {
 	waitUntil(promise: Promise<any>): void;
