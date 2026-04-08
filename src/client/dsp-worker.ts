@@ -363,20 +363,27 @@ function processVfoAudio(chunkLenBytes: number, params: any): Float32Array | nul
                     const resampled = dsdAudioResampler.process(dsdAudio8k);
 
                     if (resampled.length > 0) {
-                        // Return the resampled audio directly
                         for (let i = 0; i < resampled.length; i++) {
                             if (resampled[i] > 1.0) resampled[i] = 1.0;
                             else if (resampled[i] < -1.0) resampled[i] = -1.0;
+                        }
+                        // DEBUG: log DSD audio output stats
+                        if (typeof (self as any)._dsdDbgCnt === 'undefined') (self as any)._dsdDbgCnt = 0;
+                        (self as any)._dsdDbgCnt++;
+                        if ((self as any)._dsdDbgCnt % 10 === 1) {
+                            let maxVal = 0;
+                            for (let j = 0; j < resampled.length; j++) if (Math.abs(resampled[j]) > maxVal) maxVal = Math.abs(resampled[j]);
+                            console.log(`[DSD] audio out: 8k=${dsdAudioAccumLen} → 48k=${resampled.length} samples, peak=${maxVal.toFixed(4)}, chunk#${(self as any)._dsdDbgCnt}`);
                         }
                         return resampled.slice();
                     }
                 }
 
-                // No decoded audio yet - fill silence at IF rate for resampler continuity
-                audioDemodRateSamples.fill(0);
-            } else {
-                audioDemodRateSamples.fill(0);
+                // No decoded voice this chunk — return null so the audio
+                // player doesn't schedule silence that disrupts timing.
+                return null;
             }
+            return null;
         }
         else if (mode === 'raw') {
             for (let i = 0; i < numDemodSamples; i++) {

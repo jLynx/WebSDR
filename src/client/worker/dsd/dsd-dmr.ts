@@ -219,3 +219,41 @@ export const DMR_BURST_DIBITS = 120; // 54 + 12(CACH) + 54
 
 /** Number of dibits for sync word */
 export const DMR_SYNC_DIBITS = 24;
+
+/**
+ * Check the sync/EMB word within a DMR voice superframe burst to detect
+ * whether this burst carries voice or data. SDR++ Brown does this per-burst
+ * and mutes audio for data bursts.
+ *
+ * The sync/EMB is 24 dibits. We collapse each dibit's polarity (positive → '1',
+ * negative → '3') and compare against known sync patterns, matching the
+ * SDR++ Brown convention: `(dibit | 1) + 48`.
+ *
+ * @param dibitBuf  Circular dibit buffer
+ * @param syncPos   Position of the 24-dibit sync/EMB word in the buffer
+ * @param mask      Circular buffer mask (0xFFFF)
+ * @returns true if this burst is DATA (should mute), false if VOICE (decode)
+ */
+export function checkDMRBurstSync(
+	dibitBuf: Uint8Array,
+	syncPos: number,
+	mask: number
+): boolean {
+	// Build collapsed sync string: dibits 0,1 → '1'; dibits 2,3 → '3'
+	let sync = '';
+	for (let i = 0; i < 24; i++) {
+		const d = dibitBuf[(syncPos + i) & mask] & 3;
+		sync += String.fromCharCode(((d | 1) + 48));
+	}
+
+	// Data sync patterns (any of these → mute this slot)
+	if (sync === SYNC_WORDS.DMR_BS_DATA ||
+		sync === SYNC_WORDS.DMR_MS_DATA ||
+		sync === SYNC_WORDS.DMR_DM_TS1_DATA ||
+		sync === SYNC_WORDS.DMR_DM_TS2_DATA) {
+		return true; // DATA → mute
+	}
+
+	// Voice sync patterns or unrecognized EMB → don't mute
+	return false;
+}
