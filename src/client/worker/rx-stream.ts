@@ -119,9 +119,14 @@ export async function startRxStream(
 			worker.onmessage = (e: MessageEvent) => {
 				const msg = e.data;
 				if (msg.type === "audio") {
-					backend._handleWorkerAudio!(index, msg);
+					// Look up current index dynamically — splice() in removeVfo
+					// shifts the array, so the captured `index` goes stale.
+					const currentIndex = backend.dspWorkers!.indexOf(worker);
+					if (currentIndex === -1) return; // worker was removed
+					backend._handleWorkerAudio!(currentIndex, msg);
 				} else if (msg.type === "error") {
-					console.error(`[DSP Worker ${index}] Error:`, msg.error);
+					const currentIndex = backend.dspWorkers!.indexOf(worker);
+					console.error(`[DSP Worker ${currentIndex}] Error:`, msg.error);
 				}
 			};
 			worker.postMessage({
@@ -493,10 +498,16 @@ export async function startRxStream(
 
 		let chunkCounter = 0;
 
+		let _audioDebugCounter = 0;
 		const handleWorkerAudio = (v: number, msg: any): void => {
 			const state = backend.vfoStates![v];
 			const params = backend.vfoParams![v];
-			if (!state || !params) return;
+			if (!state || !params) {
+				if (_audioDebugCounter++ % 200 === 0) {
+					console.warn(`[handleWorkerAudio] VFO ${v} has no state/params (vfoParams.length=${backend.vfoParams?.length}, vfoStates.length=${backend.vfoStates?.length})`);
+				}
+				return;
+			}
 
 			state.squelchOpen = msg.squelchOpen;
 			if (!backend._latchedSquelchOpen) backend._latchedSquelchOpen = [];

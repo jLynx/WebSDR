@@ -119,10 +119,15 @@ self.onmessage = async (e: MessageEvent) => {
 };
 
 function configureDDC(params: any, systemCenterFreq: number): void {
-    if (vfoState.currentIfRate !== IF_RATES[params.mode]) {
-        vfoState.audioResampler = new RationalResampler(IF_RATES[params.mode], AUDIO_RATE);
-        vfoState.currentIfRate = IF_RATES[params.mode];
-        ddc.set_if_sample_rate(IF_RATES[params.mode]);
+    const ifRate = IF_RATES[params.mode];
+    if (ifRate === undefined) {
+        console.error(`[DSP Worker] Unknown mode "${params.mode}" — no IF rate defined. Skipping DDC config.`);
+        return;
+    }
+    if (vfoState.currentIfRate !== ifRate) {
+        vfoState.audioResampler = new RationalResampler(ifRate, AUDIO_RATE);
+        vfoState.currentIfRate = ifRate;
+        ddc.set_if_sample_rate(ifRate);
     }
 
     const offsetFreq = (params.freq - systemCenterFreq) * 1e6;

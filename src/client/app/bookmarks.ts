@@ -64,7 +64,7 @@ export const bookmarkMethods = {
 		this.saveBookmarks();
 		this.showMsg(`"${bm.name}" saved.`);
 	},
-	jumpToBookmark(this: AppInstance, index: number) {
+	async jumpToBookmark(this: AppInstance, index: number) {
 		const bm = this.bookmarks[index];
 		if (!bm) return;
 		if ((bm.type || 'group') === 'individual') {
@@ -99,6 +99,29 @@ export const bookmarkMethods = {
 		} else {
 			this.radio.centerFreq = bm.centerFreq;
 			if (bm.sampleRate) this.radio.sampleRate = bm.sampleRate;
+
+			// Sync backend VFO count: remove extras, then add missing slots
+			if (this.backend && this.running) {
+				const oldCount = this.vfos.length;
+				const newCount = bm.vfos.length;
+				// Remove excess VFOs (from the end to avoid index shifting)
+				for (let i = oldCount - 1; i >= newCount; i--) {
+					if (this.remoteMode === 'client' && this._webrtc) {
+						this._webrtc.sendCommand({ type: 'removeRemoteVfo', index: i });
+					} else {
+						await this.backend.removeVfo(i);
+					}
+				}
+				// Add missing VFO slots
+				for (let i = oldCount; i < newCount; i++) {
+					if (this.remoteMode === 'client' && this._webrtc) {
+						this._webrtc.sendCommand({ type: 'addRemoteVfo' });
+					} else {
+						await this.backend.addVfo();
+					}
+				}
+			}
+
 			this.vfos = bm.vfos.map((v: any) => ({
 				...makeDefaultVfo(),
 				...v,

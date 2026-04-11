@@ -126,8 +126,26 @@ export class FIRFilter {
 	}
 }
 
-// Math greatest common divisor for rational resampling
-export const gcd = (a: number, b: number): number => (b === 0 ? a : gcd(b, a % b));
+// Math greatest common divisor for rational resampling (iterative to avoid stack overflow)
+export function gcd(a: number, b: number): number {
+	// Guard against NaN / Infinity / non-integer which would loop forever
+	a = Math.round(Math.abs(a));
+	b = Math.round(Math.abs(b));
+	if (!Number.isFinite(a) || !Number.isFinite(b)) {
+		console.error(`[gcd] non-finite input: a=${a}, b=${b} — returning 1`);
+		return 1;
+	}
+	if (a === 0 && b === 0) {
+		console.error(`[gcd] both inputs are 0 — returning 1`);
+		return 1;
+	}
+	while (b !== 0) {
+		const t = b;
+		b = a % b;
+		a = t;
+	}
+	return a;
+}
 
 export class PolyphaseResampler {
 	interp: number;
@@ -230,6 +248,9 @@ export class RationalResampler {
 	constructor(inSamplerate: number, outSamplerate: number) {
 		const IntSR = Math.round(inSamplerate);
 		const OutSR = Math.round(outSamplerate);
+		if (IntSR <= 0 || OutSR <= 0) {
+			console.error(`[RationalResampler] Invalid sample rates: in=${inSamplerate} (→${IntSR}), out=${outSamplerate} (→${OutSR})`);
+		}
 		const divider = gcd(IntSR, OutSR);
 
 		this.interp = OutSR / divider;
