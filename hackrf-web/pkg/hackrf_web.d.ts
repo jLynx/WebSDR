@@ -113,6 +113,24 @@ export class FFT {
 
 export function alloc_iq_buffer(capacity: number): number;
 
+export function dsp_configure(ptr: number, sample_rate: number, shift_hz: number, bandwidth: number, squelch_level: number, squelch_enabled: boolean, wfm_mode: boolean, low_pass: boolean, high_pass: boolean): void;
+
+export function dsp_free(ptr: number): void;
+
+export function dsp_get_iq_output_len(ptr: number): number;
+
+export function dsp_get_output_len(ptr: number): number;
+
+export function dsp_new(in_sample_rate: number, shift_hz: number, bandwidth: number): number;
+
+export function dsp_process_iq_only_ptr(ptr: number, iq_ptr: number, num_iq_bytes: number): number;
+
+export function dsp_process_ptr(ptr: number, iq_ptr: number, num_iq_bytes: number): number;
+
+export function dsp_reset(ptr: number): void;
+
+export function dsp_set_if_sample_rate(ptr: number, new_if_sr: number): void;
+
 export function free_iq_buffer(ptr: number, capacity: number): void;
 
 export function set_panic_hook(): void;
@@ -124,6 +142,14 @@ export interface InitOutput {
     readonly __wbg_dspprocessor_free: (a: number, b: number) => void;
     readonly __wbg_fft_free: (a: number, b: number) => void;
     readonly alloc_iq_buffer: (a: number) => number;
+    readonly dsp_configure: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number) => void;
+    readonly dsp_free: (a: number) => void;
+    readonly dsp_get_iq_output_len: (a: number) => number;
+    readonly dsp_new: (a: number, b: number, c: number) => number;
+    readonly dsp_process_iq_only_ptr: (a: number, b: number, c: number) => number;
+    readonly dsp_process_ptr: (a: number, b: number, c: number) => number;
+    readonly dsp_reset: (a: number) => void;
+    readonly dsp_set_if_sample_rate: (a: number, b: number) => void;
     readonly dspprocessor_get_iq_output_len: (a: number) => number;
     readonly dspprocessor_new: (a: number, b: number, c: number) => number;
     readonly dspprocessor_process: (a: number, b: number, c: number, d: number, e: number, f: any) => number;
@@ -144,6 +170,7 @@ export interface InitOutput {
     readonly free_iq_buffer: (a: number, b: number) => void;
     readonly set_panic_hook: () => void;
     readonly dspprocessor_get_output_len: (a: number) => number;
+    readonly dsp_get_output_len: (a: number) => number;
     readonly __wbindgen_free: (a: number, b: number, c: number) => void;
     readonly __wbindgen_malloc: (a: number, b: number) => number;
     readonly __wbindgen_realloc: (a: number, b: number, c: number, d: number) => number;

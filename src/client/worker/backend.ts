@@ -42,6 +42,7 @@ import {
 	removeRemoteVfo,
 	_queueRemoteAudio,
 	_mixAndEmitRemoteAudio,
+	_spawnRemotePoolWorker,
 	_reinitRemoteClientWorkers,
 	initRemoteClient,
 	feedRemoteAudioChunk,
@@ -57,8 +58,13 @@ export class Backend {
 	// VFO state
 	vfoParams?: VfoParams[];
 	vfoStates?: VfoState[];
-	dspWorkers?: Worker[];
 	ddcs?: any[];
+
+	// DSP worker pool
+	dspPool?: Worker[];
+	vfoSlotIds?: number[];
+	vfoPoolAssignment?: number[];
+	_nextSlotId?: number;
 
 	// Shared IQ buffers
 	sharedIqPools?: (SharedArrayBuffer | ArrayBuffer)[];
@@ -68,13 +74,15 @@ export class Backend {
 	// DSP perf
 	_perf?: PerfCounters;
 	_perfInterval?: any;
+	_mixerInterval?: any;
 
 	// Internal state
 	_sampleRate?: number;
 	_centerFreq?: number;
 	_makeVfoState?: () => VfoState;
-	_spawnWorker?: (index: number, params: VfoParams) => Worker;
-	_handleWorkerAudio?: (v: number, msg: any) => void;
+	_handleWorkerAudio?: (workerIndex: number, msg: any) => void;
+	_spawnPoolWorker?: () => number;
+	_poolMaxSize?: number;
 	_mixBuf?: Float32Array;
 	_latchedSquelchOpen?: boolean[];
 
@@ -157,6 +165,7 @@ export class Backend {
 	removeRemoteVfo = removeRemoteVfo.bind(this);
 	_queueRemoteAudio = _queueRemoteAudio.bind(this);
 	_mixAndEmitRemoteAudio = _mixAndEmitRemoteAudio.bind(this);
+	_spawnRemotePoolWorker = _spawnRemotePoolWorker.bind(this);
 	_reinitRemoteClientWorkers = _reinitRemoteClientWorkers.bind(this);
 	initRemoteClient = initRemoteClient.bind(this);
 	feedRemoteAudioChunk = feedRemoteAudioChunk.bind(this);
@@ -184,12 +193,17 @@ export class Backend {
 		if (!this.vfoParams || index < 0 || index >= this.vfoParams.length) return;
 		Object.assign(this.vfoParams[index], params);
 
-		if (this.dspWorkers && this.dspWorkers[index]) {
-			this.dspWorkers[index].postMessage({
-				type: 'configure',
-				params: this.vfoParams[index],
-				centerFreq: this._centerFreq
-			});
+		if (this.dspPool && this.vfoSlotIds && this.vfoPoolAssignment) {
+			const slotId = this.vfoSlotIds[index];
+			const workerIdx = this.vfoPoolAssignment[index];
+			if (this.dspPool[workerIdx]) {
+				this.dspPool[workerIdx].postMessage({
+					type: 'configure',
+					slotId,
+					params: this.vfoParams[index],
+					centerFreq: this._centerFreq
+				});
+			}
 		}
 
 		if (params.pocsag === false && this.vfoStates && this.vfoStates[index]) {
@@ -198,29 +212,57 @@ export class Backend {
 	}
 
 	addVfo(): number {
-		if (!this.vfoParams) return -1;
+		if (!this.vfoParams || !this.dspPool) return -1;
 		const centerFreq = this._centerFreq || 100.0;
 		const bw = 150000;
 		const params: VfoParams = { freq: centerFreq, mode: 'wfm', enabled: false, deEmphasis: '50us', squelchEnabled: false, squelchLevel: -100.0, lowPass: true, highPass: false, bandwidth: bw, volume: 50, pocsag: false };
 		this.vfoParams.push(params);
-
-		const index = this.vfoParams.length - 1;
 		this.vfoStates!.push(this._makeVfoState!());
-		this.dspWorkers!.push(this._spawnWorker!(index, params));
 
-		return index;
+		// Assign to least-loaded pool worker, growing pool if needed.
+		// Keep ≤2 VFOs per worker so each stays under ~2ms/chunk,
+		// leaving headroom for dev tools or other overhead.
+		const MAX_VFOS_PER_WORKER = 2;
+		const slotId = this._nextSlotId!++;
+		const poolSize = this.dspPool.length;
+		const loads = new Array(poolSize).fill(0);
+		for (const wi of this.vfoPoolAssignment!) loads[wi]++;
+		const minLoad = Math.min(...loads);
+		let workerIdx = loads.indexOf(minLoad);
+
+		if (minLoad >= MAX_VFOS_PER_WORKER && this._spawnPoolWorker) {
+			workerIdx = this._spawnPoolWorker();
+		}
+
+		this.vfoSlotIds!.push(slotId);
+		this.vfoPoolAssignment!.push(workerIdx);
+
+		this.dspPool[workerIdx].postMessage({
+			type: 'addSlot',
+			slotId,
+			params,
+			centerFreq
+		});
+
+		return this.vfoParams.length - 1;
 	}
 
 	removeVfo(index: number): void {
 		if (!this.vfoParams || index < 0 || index >= this.vfoParams.length) return;
 		if (this.vfoParams.length <= 1) return;
 
-		if (this.dspWorkers![index]) {
-			this.dspWorkers![index].terminate();
+		// Remove the slot from its pool worker
+		if (this.dspPool && this.vfoSlotIds && this.vfoPoolAssignment) {
+			const slotId = this.vfoSlotIds[index];
+			const workerIdx = this.vfoPoolAssignment[index];
+			if (this.dspPool[workerIdx]) {
+				this.dspPool[workerIdx].postMessage({ type: 'removeSlot', slotId });
+			}
+			this.vfoSlotIds.splice(index, 1);
+			this.vfoPoolAssignment.splice(index, 1);
 		}
 
 		this.vfoParams.splice(index, 1);
-		this.dspWorkers!.splice(index, 1);
 		this.vfoStates!.splice(index, 1);
 	}
 
@@ -237,11 +279,14 @@ export class Backend {
 		
 		this._centerFreq = freqHz / 1e6;
 
-		if (this.vfoParams && this.dspWorkers) {
+		if (this.vfoParams && this.dspPool && this.vfoSlotIds && this.vfoPoolAssignment) {
 			for (let i = 0; i < this.vfoParams.length; i++) {
-				if (this.dspWorkers[i]) {
-					this.dspWorkers[i].postMessage({
+				const slotId = this.vfoSlotIds[i];
+				const workerIdx = this.vfoPoolAssignment[i];
+				if (this.dspPool[workerIdx]) {
+					this.dspPool[workerIdx].postMessage({
 						type: 'configure',
+						slotId,
 						params: this.vfoParams[i],
 						centerFreq: this._centerFreq
 					});
@@ -251,14 +296,18 @@ export class Backend {
 
 		if (this._remoteClients) {
 			for (const rc of this._remoteClients.values()) {
-				if (rc.workers && rc.params) {
-					for (let i = 0; i < rc.workers.length; i++) {
-						if (rc.workers[i]) {
-							rc.workers[i]!.postMessage({
-								type: 'configure',
-								params: rc.params[i],
-								centerFreq: this._centerFreq
-							});
+				if (rc.workers.length && rc.params) {
+					for (let i = 0; i < rc.params.length; i++) {
+						if (rc.params[i] && rc.slotIds[i] !== undefined && rc.slotAssignment[i] !== undefined) {
+							const w = rc.workers[rc.slotAssignment[i]];
+							if (w) {
+								w.postMessage({
+									type: 'configure',
+									slotId: rc.slotIds[i],
+									params: rc.params[i],
+									centerFreq: this._centerFreq
+								});
+							}
 						}
 					}
 				}

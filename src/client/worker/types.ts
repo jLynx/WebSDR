@@ -90,7 +90,10 @@ export interface RxStreamOpts {
 }
 
 export interface RemoteClientState {
-	workers: (Worker | null)[];
+	workers: Worker[];
+	slotIds: number[];
+	slotAssignment: number[];
+	nextSlotId: number;
 	params: (VfoParams | null)[];
 	audioQueues: { queue: Float32Array; len: number }[];
 	mixBuf: Float32Array | null;

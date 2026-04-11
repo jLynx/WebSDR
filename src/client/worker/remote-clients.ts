@@ -26,11 +26,43 @@ import { ensureWasmInitialized, init } from './wasm-init';
 import type { Backend } from './backend';
 
 // ── Remote-client VFO management (multi-client) ──────────────────────────
-// Each connected client has its own independent set of VFOs. For each one
-// the host spawns a dedicated DSP worker so the client can tune freely
-// without affecting the host's or other clients' VFOs. Audio from each
-// client's workers is mixed (respecting per-VFO volume) and sent back to
-// that specific client via _remoteHostAudioCb(clientId, chunk).
+// Each connected client gets a single pooled DSP worker with one slot per
+// VFO. The host processes IQ data through each client's worker, which
+// returns batched audio for all of that client's VFOs. Audio is mixed
+// (respecting per-VFO volume) and sent back to that specific client via
+// _remoteHostAudioCb(clientId, chunk).
+
+export function _spawnRemotePoolWorker(this: Backend, clientId: string, state: RemoteClientState): number {
+	const worker = new globalThis.Worker(new URL('../dsp-worker.ts', import.meta.url), { type: 'module' });
+	const poolIndex = state.workers.length;
+	worker.onmessage = (e: MessageEvent) => {
+		const msg = e.data;
+		if (msg.type === 'audioBatch' && msg.results) {
+			for (const result of msg.results) {
+				const vfoIndex = state.slotIds.indexOf(result.slotId);
+				if (vfoIndex === -1) continue;
+
+				const prev = state.squelchOpen[vfoIndex] || false;
+				const curr = !!result.squelchOpen;
+				state.squelchOpen[vfoIndex] = curr;
+				if (curr !== prev && this._remoteHostSquelchCb) {
+					this._remoteHostSquelchCb(clientId, state.squelchOpen.slice());
+				}
+				if (result.samples) {
+					this._queueRemoteAudio(clientId, vfoIndex, new Float32Array(result.samples));
+				}
+			}
+		}
+	};
+	worker.postMessage({
+		type: 'init',
+		sampleRate: this._sampleRate,
+		centerFreq: this._centerFreq,
+		sabs: typeof SharedArrayBuffer !== 'undefined' ? this.sharedIqPools : null
+	});
+	state.workers.push(worker);
+	return poolIndex;
+}
 
 export async function setRemoteHostCallback(this: Backend, callback: any): Promise<void> {
 	this._remoteHostCb = callback;
@@ -63,6 +95,9 @@ export function _getOrCreateClientState(this: Backend, clientId: string): Remote
 	if (!this._remoteClients!.has(clientId)) {
 		this._remoteClients!.set(clientId, {
 			workers: [],
+			slotIds: [],
+			slotAssignment: [],
+			nextSlotId: 0,
 			params: [],
 			audioQueues: [],
 			mixBuf: null,
@@ -81,9 +116,7 @@ export async function removeRemoteClient(this: Backend, clientId: string): Promi
 	this._ensureRemoteClients();
 	const state = this._remoteClients!.get(clientId);
 	if (!state) return;
-	for (const w of state.workers) {
-		if (w) { try { w.terminate(); } catch (_) {} }
-	}
+	for (const w of state.workers) { try { w.terminate(); } catch (_) {} }
 	this._remoteClients!.delete(clientId);
 }
 
@@ -96,35 +129,44 @@ export async function setRemoteVfoParams(this: Backend, clientId: string, index:
 		state.audioQueues[index].len = 0;
 	}
 
-	if (!state.workers[index]) {
-		if (!this._sampleRate || !this.sharedIqPools) return;
-		const worker = new globalThis.Worker(new URL('../dsp-worker.ts', import.meta.url), { type: 'module' });
-		worker.onmessage = (e: MessageEvent) => {
-			const msg = e.data;
-			if (msg.type === 'audio') {
-				const prev = state.squelchOpen[index] || false;
-				const curr = !!msg.squelchOpen;
-				state.squelchOpen[index] = curr;
-				if (curr !== prev && this._remoteHostSquelchCb) {
-					this._remoteHostSquelchCb(clientId, state.squelchOpen.slice());
-				}
-				if (msg.samples) {
-					this._queueRemoteAudio(clientId, index, new Float32Array(msg.samples));
-				}
+	if (!this._sampleRate || !this.sharedIqPools) return;
+
+	// If this VFO doesn't have a slot yet, add one
+	if (state.slotIds[index] === undefined) {
+		const MAX_VFOS_PER_WORKER = 2;
+		const maxPool = navigator.hardwareConcurrency || 8;
+
+		// Find least-loaded worker, or spawn a new one
+		let workerIdx: number;
+		if (state.workers.length === 0) {
+			workerIdx = this._spawnRemotePoolWorker!(clientId, state);
+		} else {
+			const loads = new Array(state.workers.length).fill(0);
+			for (const wi of state.slotAssignment) {
+				if (wi !== undefined) loads[wi]++;
 			}
-		};
-		worker.postMessage({
-			type: 'init',
-			sampleRate: this._sampleRate,
-			centerFreq: this._centerFreq,
-			params: params,
-			sabs: typeof SharedArrayBuffer !== 'undefined' ? this.sharedIqPools : null
-		});
-		state.workers[index] = worker;
+			const minLoad = Math.min(...loads);
+			workerIdx = loads.indexOf(minLoad);
+			if (minLoad >= MAX_VFOS_PER_WORKER && state.workers.length < maxPool) {
+				workerIdx = this._spawnRemotePoolWorker!(clientId, state);
+			}
+		}
+
+		const slotId = state.nextSlotId++;
+		state.slotIds[index] = slotId;
+		state.slotAssignment[index] = workerIdx;
 		state.audioQueues[index] = { queue: new Float32Array(32768), len: 0 };
+		state.workers[workerIdx].postMessage({
+			type: 'addSlot',
+			slotId,
+			params: params,
+			centerFreq: this._centerFreq
+		});
 	} else {
-		state.workers[index]!.postMessage({
+		const workerIdx = state.slotAssignment[index];
+		state.workers[workerIdx].postMessage({
 			type: 'configure',
+			slotId: state.slotIds[index],
 			params: params,
 			centerFreq: this._centerFreq
 		});
@@ -133,18 +175,24 @@ export async function setRemoteVfoParams(this: Backend, clientId: string, index:
 
 export async function addRemoteVfo(this: Backend, clientId: string): Promise<void> {
 	const state = this._getOrCreateClientState(clientId);
-	const idx = state.workers.length;
-	state.workers[idx] = null;
-	state.params[idx]   = null;
+	const idx = state.params.length;
+	state.params[idx] = null;
 	state.audioQueues[idx] = { queue: new Float32Array(32768), len: 0 };
 }
 
 export async function removeRemoteVfo(this: Backend, clientId: string, index: number): Promise<void> {
 	const state = this._remoteClients && this._remoteClients.get(clientId);
 	if (!state) return;
-	const w = state.workers[index];
-	if (w) { try { w.terminate(); } catch (_) {} }
-	state.workers.splice(index, 1);
+
+	if (state.slotIds[index] !== undefined && state.slotAssignment[index] !== undefined) {
+		const workerIdx = state.slotAssignment[index];
+		if (state.workers[workerIdx]) {
+			state.workers[workerIdx].postMessage({ type: 'removeSlot', slotId: state.slotIds[index] });
+		}
+	}
+
+	state.slotIds.splice(index, 1);
+	state.slotAssignment.splice(index, 1);
 	state.params.splice(index, 1);
 	state.audioQueues.splice(index, 1);
 	state.pocsagDecoders.splice(index, 1);
@@ -187,7 +235,7 @@ export function _mixAndEmitRemoteAudio(this: Backend, clientId: string): void {
 	const BATCH = 512;
 	let minAvailable = Infinity;
 	const active: { q: { queue: Float32Array; len: number }; p: VfoParams }[] = [];
-	for (let i = 0; i < state.workers.length; i++) {
+	for (let i = 0; i < state.params.length; i++) {
 		const p = state.params[i];
 		if (!p || !p.enabled) continue;
 		const q = state.audioQueues[i];
@@ -221,37 +269,45 @@ export function _mixAndEmitRemoteAudio(this: Backend, clientId: string): void {
 export function _reinitRemoteClientWorkers(this: Backend): void {
 	if (!this._remoteClients) return;
 	for (const [clientId, state] of this._remoteClients) {
-		for (let i = 0; i < state.workers.length; i++) {
-			const oldWorker = state.workers[i];
-			if (!oldWorker) continue;
-			try { oldWorker.terminate(); } catch (_) {}
+		// Terminate all pool workers
+		for (const w of state.workers) { try { w.terminate(); } catch (_) {} }
+		state.workers = [];
+		state.slotAssignment = [];
 
+		// Re-add all VFO slots (pool grows dynamically via setRemoteVfoParams path)
+		state.nextSlotId = 0;
+		const MAX_VFOS_PER_WORKER = 2;
+		const maxPool = navigator.hardwareConcurrency || 8;
+
+		for (let i = 0; i < state.params.length; i++) {
 			const params = state.params[i];
-			if (!params) { state.workers[i] = null; continue; }
+			if (!params) continue;
 
-			const worker = new globalThis.Worker(new URL('../dsp-worker.ts', import.meta.url), { type: 'module' });
-			worker.onmessage = (e: MessageEvent) => {
-				const msg = e.data;
-				if (msg.type === 'audio') {
-					const prev = state.squelchOpen[i] || false;
-					const curr = !!msg.squelchOpen;
-					state.squelchOpen[i] = curr;
-					if (curr !== prev && this._remoteHostSquelchCb) {
-						this._remoteHostSquelchCb(clientId, state.squelchOpen.slice());
-					}
-					if (msg.samples) {
-						this._queueRemoteAudio(clientId, i, new Float32Array(msg.samples));
-					}
+			// Find or spawn worker
+			let workerIdx: number;
+			if (state.workers.length === 0) {
+				workerIdx = this._spawnRemotePoolWorker!(clientId, state);
+			} else {
+				const loads = new Array(state.workers.length).fill(0);
+				for (const wi of state.slotAssignment) {
+					if (wi !== undefined) loads[wi]++;
 				}
-			};
-			worker.postMessage({
-				type: 'init',
-				sampleRate: this._sampleRate,
-				centerFreq: this._centerFreq,
-				params: params,
-				sabs: typeof SharedArrayBuffer !== 'undefined' ? this.sharedIqPools : null
+				const minLoad = Math.min(...loads);
+				workerIdx = loads.indexOf(minLoad);
+				if (minLoad >= MAX_VFOS_PER_WORKER && state.workers.length < maxPool) {
+					workerIdx = this._spawnRemotePoolWorker!(clientId, state);
+				}
+			}
+
+			const slotId = state.nextSlotId++;
+			state.slotIds[i] = slotId;
+			state.slotAssignment[i] = workerIdx;
+			state.workers[workerIdx].postMessage({
+				type: 'addSlot',
+				slotId,
+				params,
+				centerFreq: this._centerFreq
 			});
-			state.workers[i] = worker;
 			state.audioQueues[i] = { queue: new Float32Array(32768), len: 0 };
 		}
 	}
