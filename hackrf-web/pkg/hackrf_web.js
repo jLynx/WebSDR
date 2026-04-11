@@ -236,6 +236,94 @@ export function alloc_iq_buffer(capacity) {
 
 /**
  * @param {number} ptr
+ * @param {number} sample_rate
+ * @param {number} shift_hz
+ * @param {number} bandwidth
+ * @param {number} squelch_level
+ * @param {boolean} squelch_enabled
+ * @param {boolean} wfm_mode
+ * @param {boolean} low_pass
+ * @param {boolean} high_pass
+ */
+export function dsp_configure(ptr, sample_rate, shift_hz, bandwidth, squelch_level, squelch_enabled, wfm_mode, low_pass, high_pass) {
+    wasm.dsp_configure(ptr, sample_rate, shift_hz, bandwidth, squelch_level, squelch_enabled, wfm_mode, low_pass, high_pass);
+}
+
+/**
+ * @param {number} ptr
+ */
+export function dsp_free(ptr) {
+    wasm.dsp_free(ptr);
+}
+
+/**
+ * @param {number} ptr
+ * @returns {number}
+ */
+export function dsp_get_iq_output_len(ptr) {
+    const ret = wasm.dsp_get_iq_output_len(ptr);
+    return ret >>> 0;
+}
+
+/**
+ * @param {number} ptr
+ * @returns {number}
+ */
+export function dsp_get_output_len(ptr) {
+    const ret = wasm.dsp_get_output_len(ptr);
+    return ret >>> 0;
+}
+
+/**
+ * @param {number} in_sample_rate
+ * @param {number} shift_hz
+ * @param {number} bandwidth
+ * @returns {number}
+ */
+export function dsp_new(in_sample_rate, shift_hz, bandwidth) {
+    const ret = wasm.dsp_new(in_sample_rate, shift_hz, bandwidth);
+    return ret >>> 0;
+}
+
+/**
+ * @param {number} ptr
+ * @param {number} iq_ptr
+ * @param {number} num_iq_bytes
+ * @returns {number}
+ */
+export function dsp_process_iq_only_ptr(ptr, iq_ptr, num_iq_bytes) {
+    const ret = wasm.dsp_process_iq_only_ptr(ptr, iq_ptr, num_iq_bytes);
+    return ret >>> 0;
+}
+
+/**
+ * @param {number} ptr
+ * @param {number} iq_ptr
+ * @param {number} num_iq_bytes
+ * @returns {number}
+ */
+export function dsp_process_ptr(ptr, iq_ptr, num_iq_bytes) {
+    const ret = wasm.dsp_process_ptr(ptr, iq_ptr, num_iq_bytes);
+    return ret >>> 0;
+}
+
+/**
+ * @param {number} ptr
+ */
+export function dsp_reset(ptr) {
+    wasm.dsp_reset(ptr);
+}
+
+/**
+ * @param {number} ptr
+ * @param {number} new_if_sr
+ */
+export function dsp_set_if_sample_rate(ptr, new_if_sr) {
+    wasm.dsp_set_if_sample_rate(ptr, new_if_sr);
+}
+
+/**
+ * @param {number} ptr
  * @param {number} capacity
  */
 export function free_iq_buffer(ptr, capacity) {

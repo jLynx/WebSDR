@@ -663,3 +663,69 @@ impl DspProcessor {
         self.scratch_audio.len()
     }
 }
+
+// ============================================================================
+// Raw-pointer API — bypasses wasm-bindgen's WasmRefCell borrow checking
+// so multiple DspProcessor instances can coexist in a single WASM module.
+// Each instance is heap-allocated and managed via opaque usize handle.
+// ============================================================================
+
+#[wasm_bindgen]
+pub fn dsp_new(in_sample_rate: f32, shift_hz: f32, bandwidth: f32) -> usize {
+    let proc = Box::new(DspProcessor::new(in_sample_rate, shift_hz, bandwidth));
+    Box::into_raw(proc) as usize
+}
+
+#[wasm_bindgen]
+pub fn dsp_free(ptr: usize) {
+    if ptr == 0 { return; }
+    unsafe { let _ = Box::from_raw(ptr as *mut DspProcessor); }
+}
+
+#[wasm_bindgen]
+pub fn dsp_configure(ptr: usize, sample_rate: f32, shift_hz: f32, bandwidth: f32,
+                     squelch_level: f32, squelch_enabled: bool,
+                     wfm_mode: bool, low_pass: bool, high_pass: bool) {
+    let p = unsafe { &mut *(ptr as *mut DspProcessor) };
+    p.set_shift(sample_rate, shift_hz);
+    p.set_bandwidth(bandwidth);
+    p.set_squelch(squelch_level, squelch_enabled);
+    p.set_wfm_mode(wfm_mode);
+    p.set_audio_filters(low_pass, high_pass);
+}
+
+#[wasm_bindgen]
+pub fn dsp_set_if_sample_rate(ptr: usize, new_if_sr: f32) {
+    let p = unsafe { &mut *(ptr as *mut DspProcessor) };
+    p.set_if_sample_rate(new_if_sr);
+}
+
+#[wasm_bindgen]
+pub fn dsp_process_ptr(ptr: usize, iq_ptr: *const i8, num_iq_bytes: usize) -> *const f32 {
+    let p = unsafe { &mut *(ptr as *mut DspProcessor) };
+    p.process_ptr(iq_ptr, num_iq_bytes)
+}
+
+#[wasm_bindgen]
+pub fn dsp_get_output_len(ptr: usize) -> usize {
+    let p = unsafe { &*(ptr as *const DspProcessor) };
+    p.get_output_len()
+}
+
+#[wasm_bindgen]
+pub fn dsp_process_iq_only_ptr(ptr: usize, iq_ptr: *const i8, num_iq_bytes: usize) -> *const f32 {
+    let p = unsafe { &mut *(ptr as *mut DspProcessor) };
+    p.process_iq_only_ptr(iq_ptr, num_iq_bytes)
+}
+
+#[wasm_bindgen]
+pub fn dsp_get_iq_output_len(ptr: usize) -> usize {
+    let p = unsafe { &*(ptr as *const DspProcessor) };
+    p.get_iq_output_len()
+}
+
+#[wasm_bindgen]
+pub fn dsp_reset(ptr: usize) {
+    let p = unsafe { &mut *(ptr as *mut DspProcessor) };
+    p.reset();
+}

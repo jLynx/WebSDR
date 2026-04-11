@@ -85,6 +85,8 @@ export async function startRxStream(
 
 		// Free any existing DDCs
 		if (backend.ddcs) backend.ddcs.forEach((d: any) => { try { d.free(); } catch (_) { } });
+		if (backend._perfInterval) { clearInterval(backend._perfInterval); backend._perfInterval = null; }
+		if (backend._mixerInterval) { clearInterval(backend._mixerInterval); backend._mixerInterval = null; }
 
 		// Initialize dynamic VFO arrays (start with one VFO)
 		const defaultVfoParams: VfoParams = { freq: centerFreq, mode: 'wfm', enabled: false, deEmphasis: '50us', squelchEnabled: false, squelchLevel: -100.0, lowPass: true, highPass: false, bandwidth: initialBandwidth, volume: 50, pocsag: false };
@@ -112,38 +114,56 @@ export async function startRxStream(
 			audioQueueLen: 0,
 		});
 		backend.vfoStates = [makeVfoState()];
-		backend.dspWorkers = [];
 
-		const spawnWorker = (index: number, params: VfoParams): Worker => {
+		// ── DSP Worker Pool (dynamic sizing) ─────────────────────────
+		// Terminate any existing pool workers
+		if (backend.dspPool) {
+			for (const w of backend.dspPool) { try { w.terminate(); } catch (_) {} }
+		}
+
+		backend._sampleRate = sampleRate;
+		backend._centerFreq = centerFreq;
+		backend.dspPool = [];
+		backend._nextSlotId = 1; // slot 0 used for initial VFO
+		backend._poolMaxSize = navigator.hardwareConcurrency || 8;
+
+		// Spawn a new pool worker and return its index
+		const spawnPoolWorker = (): number => {
 			const worker = new globalThis.Worker(new URL('../dsp-worker.ts', import.meta.url), { type: 'module' });
+			const poolIndex = backend.dspPool!.length;
 			worker.onmessage = (e: MessageEvent) => {
 				const msg = e.data;
-				if (msg.type === "audio") {
-					// Look up current index dynamically — splice() in removeVfo
-					// shifts the array, so the captured `index` goes stale.
-					const currentIndex = backend.dspWorkers!.indexOf(worker);
-					if (currentIndex === -1) return; // worker was removed
-					backend._handleWorkerAudio!(currentIndex, msg);
+				if (msg.type === "audioBatch") {
+					backend._handleWorkerAudio!(poolIndex, msg);
 				} else if (msg.type === "error") {
-					const currentIndex = backend.dspWorkers!.indexOf(worker);
-					console.error(`[DSP Worker ${currentIndex}] Error:`, msg.error);
+					console.error(`[DSP Pool ${poolIndex}] Error:`, msg.error);
 				}
 			};
 			worker.postMessage({
 				type: 'init',
-				sampleRate: sampleRate,
-				centerFreq: centerFreq,
-				params: params,
+				sampleRate: backend._sampleRate,
+				centerFreq: backend._centerFreq,
 				sabs: typeof SharedArrayBuffer !== 'undefined' ? backend.sharedIqPools : null
 			});
-			return worker;
+			backend.dspPool!.push(worker);
+			return poolIndex;
 		};
-		backend.dspWorkers.push(spawnWorker(0, backend.vfoParams[0]));
+		backend._spawnPoolWorker = spawnPoolWorker;
+
+		// Start with just 1 worker — pool grows as VFOs are added
+		spawnPoolWorker();
+
+		// Assign initial VFO (slot 0) to pool worker 0
+		backend.vfoSlotIds = [0];
+		backend.vfoPoolAssignment = [0];
+		backend.dspPool[0].postMessage({
+			type: 'addSlot',
+			slotId: 0,
+			params: backend.vfoParams[0],
+			centerFreq: centerFreq
+		});
 
 		backend._makeVfoState = makeVfoState;
-		backend._spawnWorker = spawnWorker;
-		backend._sampleRate = sampleRate;
-		backend._centerFreq = centerFreq;
 
 		// ── DSP Performance Counters ──────────────────────────────────
 		const perf: PerfCounters = {
@@ -498,65 +518,23 @@ export async function startRxStream(
 
 		let chunkCounter = 0;
 
-		let _audioDebugCounter = 0;
-		const handleWorkerAudio = (v: number, msg: any): void => {
-			const state = backend.vfoStates![v];
-			const params = backend.vfoParams![v];
-			if (!state || !params) {
-				if (_audioDebugCounter++ % 200 === 0) {
-					console.warn(`[handleWorkerAudio] VFO ${v} has no state/params (vfoParams.length=${backend.vfoParams?.length}, vfoStates.length=${backend.vfoStates?.length})`);
-				}
-				return;
-			}
+		// ── Decoupled mixer: runs on a timer instead of per-worker-message ──
+		// With N workers each firing per USB chunk, running the mixer inside
+		// handleWorkerAudio means O(N²) scans per chunk cycle. Instead, the
+		// mixer runs at a fixed ~50 Hz interval — fast enough for smooth audio,
+		// but independent of VFO count.
+		let _mixerDirty = false;
+		const AUDIO_BATCH_THRESHOLD_MIXER = 512;
 
-			state.squelchOpen = msg.squelchOpen;
-			if (!backend._latchedSquelchOpen) backend._latchedSquelchOpen = [];
-			if (msg.squelchOpen) backend._latchedSquelchOpen[v] = true;
-			if (msg.dspTime) {
-				perf.dspTimeSum += msg.dspTime;
-				if (msg.dspTime > perf.dspTimeMax) perf.dspTimeMax = msg.dspTime;
-				perf.audioCalls++;
-			}
+		const runMixer = (): void => {
+			if (!_mixerDirty) return;
+			_mixerDirty = false;
 
-			if (msg.samples) {
-				const out = new Float32Array(msg.samples);
-				perf.audioSamplesOut += out.length;
-
-				if (params.enabled) {
-					const qLen = state.audioQueueLen;
-					if (qLen + out.length > state.audioQueue.length) {
-						const b = new Float32Array(state.audioQueue.length * 2);
-						b.set(state.audioQueue.subarray(0, qLen));
-						state.audioQueue = b;
-					}
-					state.audioQueue.set(out, qLen);
-					state.audioQueueLen += out.length;
-
-					if (!params.pocsag && whisperCallback) {
-						whisperCallback(v, params.freq, out);
-					}
-				}
-
-				if (pocsagCallback && params.pocsag && params.mode === 'nfm') {
-					if (!state.pocsagDecoder) {
-						state.pocsagDecoder = new POCSAGDecoder(AUDIO_RATE, (pmsg: any) => {
-							pocsagCallback(v, params.freq, pmsg);
-						});
-					}
-					state.pocsagDecoder.process(out);
-				} else if (!params.pocsag && state.pocsagDecoder) {
-					state.pocsagDecoder = null;
-				}
-			}
-
-			// Mixer block logic
 			let anyActive = false;
 			let minAvailable = Infinity;
-			const AUDIO_BATCH_THRESHOLD_MIXER = 512;
-			const activeStates: VfoState[] = [];
-			const activeParams: VfoParams[] = [];
+			const vfoCount = backend.vfoParams!.length;
 
-			for (let i = 0; i < backend.vfoParams!.length; i++) {
+			for (let i = 0; i < vfoCount; i++) {
 				const p = backend.vfoParams![i];
 				const s = backend.vfoStates![i];
 				if (s && p.enabled) {
@@ -564,48 +542,103 @@ export async function startRxStream(
 					if (s.audioQueueLen < minAvailable) {
 						minAvailable = s.audioQueueLen;
 					}
-					activeStates.push(s);
-					activeParams.push(p);
 				}
 			}
 
-			if (anyActive && minAvailable > 0 && minAvailable !== Infinity && minAvailable >= AUDIO_BATCH_THRESHOLD_MIXER) {
-				if (!backend._mixBuf || backend._mixBuf.length < minAvailable) {
-					backend._mixBuf = new Float32Array(minAvailable + 1024);
-				}
-				const mixed = backend._mixBuf;
-				mixed.fill(0, 0, minAvailable);
+			if (!anyActive || minAvailable <= 0 || minAvailable === Infinity || minAvailable < AUDIO_BATCH_THRESHOLD_MIXER) return;
 
-				for (let i = 0; i < activeStates.length; i++) {
-					const state = activeStates[i];
-					const params = activeParams[i];
-					const vol = params.volume || 50;
-					const vScaling = (vol / 100) * (vol / 100);
+			if (!backend._mixBuf || backend._mixBuf.length < minAvailable) {
+				backend._mixBuf = new Float32Array(minAvailable + 1024);
+			}
+			const mixed = backend._mixBuf;
+			mixed.fill(0, 0, minAvailable);
 
-					const source = state.audioQueue;
-					for (let k = 0; k < minAvailable; k++) {
-						mixed[k] += source[k] * vScaling;
-					}
+			for (let i = 0; i < vfoCount; i++) {
+				const p = backend.vfoParams![i];
+				const s = backend.vfoStates![i];
+				if (!s || !p.enabled) continue;
 
-					const remaining = state.audioQueueLen - minAvailable;
-					if (remaining > 0) {
-						source.copyWithin(0, minAvailable, state.audioQueueLen);
-					}
-					state.audioQueueLen = remaining;
-				}
-
+				const vol = p.volume || 50;
+				const vScaling = (vol / 100) * (vol / 100);
+				const source = s.audioQueue;
 				for (let k = 0; k < minAvailable; k++) {
-					if (mixed[k] > 1.0) mixed[k] = 1.0;
-					else if (mixed[k] < -1.0) mixed[k] = -1.0;
+					mixed[k] += source[k] * vScaling;
 				}
 
-				if (audioCallback) audioCallback(mixed.subarray(0, minAvailable));
-				// Remote client audio is now handled exclusively by _remoteVfoWorker
-				// (spawned by setRemoteVfoParams). DO NOT send the host mixer output
-				// here — that would couple the client's audio to the host's VFO state.
+				const remaining = s.audioQueueLen - minAvailable;
+				if (remaining > 0) {
+					source.copyWithin(0, minAvailable, s.audioQueueLen);
+				}
+				s.audioQueueLen = remaining;
+			}
+
+			for (let k = 0; k < minAvailable; k++) {
+				if (mixed[k] > 1.0) mixed[k] = 1.0;
+				else if (mixed[k] < -1.0) mixed[k] = -1.0;
+			}
+
+			if (audioCallback) audioCallback(mixed.subarray(0, minAvailable));
+		};
+
+		const mixerInterval = setInterval(runMixer, 20); // 50 Hz
+		backend._mixerInterval = mixerInterval;
+
+		// Handle batched audio from a pool worker — each msg contains
+		// results for all VFO slots assigned to that worker.
+		const handleWorkerAudio = (_poolIndex: number, msg: any): void => {
+			if (msg.dspTime) {
+				perf.dspTimeSum += msg.dspTime;
+				if (msg.dspTime > perf.dspTimeMax) perf.dspTimeMax = msg.dspTime;
+			}
+
+			if (!msg.results) return;
+
+			for (const result of msg.results) {
+				const vfoIndex = backend.vfoSlotIds!.indexOf(result.slotId);
+				if (vfoIndex === -1) continue;
+
+				const state = backend.vfoStates![vfoIndex];
+				const params = backend.vfoParams![vfoIndex];
+				if (!state || !params) continue;
+
+				perf.audioCalls++;
+				state.squelchOpen = result.squelchOpen;
+				if (!backend._latchedSquelchOpen) backend._latchedSquelchOpen = [];
+				if (result.squelchOpen) backend._latchedSquelchOpen[vfoIndex] = true;
+
+				if (result.samples) {
+					const out = new Float32Array(result.samples);
+					perf.audioSamplesOut += out.length;
+
+					if (params.enabled) {
+						const qLen = state.audioQueueLen;
+						if (qLen + out.length > state.audioQueue.length) {
+							const b = new Float32Array(state.audioQueue.length * 2);
+							b.set(state.audioQueue.subarray(0, qLen));
+							state.audioQueue = b;
+						}
+						state.audioQueue.set(out, qLen);
+						state.audioQueueLen += out.length;
+						_mixerDirty = true;
+
+						if (!params.pocsag && whisperCallback) {
+							whisperCallback(vfoIndex, params.freq, out);
+						}
+					}
+
+					if (pocsagCallback && params.pocsag && params.mode === 'nfm') {
+						if (!state.pocsagDecoder) {
+							state.pocsagDecoder = new POCSAGDecoder(AUDIO_RATE, (pmsg: any) => {
+								pocsagCallback(vfoIndex, params.freq, pmsg);
+							});
+						}
+						state.pocsagDecoder.process(out);
+					} else if (!params.pocsag && state.pocsagDecoder) {
+						state.pocsagDecoder = null;
+					}
+				}
 			}
 		};
-		// Expose for worker closure inside spawnWorker
 		backend._handleWorkerAudio = handleWorkerAudio;
 
 		// Apply initial gains BEFORE starting bulk reads to avoid
@@ -665,31 +698,28 @@ export async function startRxStream(
 				}
 			}
 
-			// Broadcast to DSP workers
-			for (let v = 0; v < backend.dspWorkers!.length; v++) {
-				const worker = backend.dspWorkers![v];
+			// Broadcast to DSP worker pool (each worker processes its assigned slots)
+			for (let p = 0; p < backend.dspPool!.length; p++) {
+				const worker = backend.dspPool![p];
 				if (!worker) continue;
-				const params = backend.vfoParams![v];
 				if (typeof SharedArrayBuffer !== 'undefined') {
-					worker.postMessage({ type: 'process', params: params, useSab: true, sabIndex: backend.sabPoolIndex, chunkLen: signed.length, chunkId: chunkCounter });
+					worker.postMessage({ type: 'process', useSab: true, sabIndex: backend.sabPoolIndex, chunkLen: signed.length, chunkId: chunkCounter });
 				} else {
 					const cloneBuf = signed.slice().buffer;
-					worker.postMessage({ type: 'process', params: params, useSab: false, chunk: cloneBuf, chunkLen: signed.length, chunkId: chunkCounter }, [cloneBuf]);
+					worker.postMessage({ type: 'process', useSab: false, chunk: cloneBuf, chunkLen: signed.length, chunkId: chunkCounter }, [cloneBuf]);
 				}
 			}
 
-			// Feed all remote-client VFO workers (independent from the host mixer)
+			// Feed each remote client's pool workers
 			if (backend._remoteClients) {
 				for (const [, clientState] of backend._remoteClients) {
-					for (let rv = 0; rv < clientState.workers.length; rv++) {
-						const rw = clientState.workers[rv];
+					for (const rw of clientState.workers) {
 						if (!rw) continue;
-						const rp = clientState.params[rv];
 						if (typeof SharedArrayBuffer !== 'undefined') {
-							rw.postMessage({ type: 'process', params: rp, useSab: true, sabIndex: backend.sabPoolIndex, chunkLen: signed.length, chunkId: chunkCounter });
+							rw.postMessage({ type: 'process', useSab: true, sabIndex: backend.sabPoolIndex, chunkLen: signed.length, chunkId: chunkCounter });
 						} else {
 							const rClone = signed.slice().buffer;
-							rw.postMessage({ type: 'process', params: rp, useSab: false, chunk: rClone, chunkLen: signed.length, chunkId: chunkCounter }, [rClone]);
+							rw.postMessage({ type: 'process', useSab: false, chunk: rClone, chunkLen: signed.length, chunkId: chunkCounter }, [rClone]);
 						}
 					}
 				}
