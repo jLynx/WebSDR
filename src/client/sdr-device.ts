@@ -25,7 +25,8 @@ export interface GainControl {
 	step: number;
 	default: number;
 	options?: number[];
-	type: 'slider' | 'checkbox';
+	labels?: string[];
+	type: 'slider' | 'checkbox' | 'select';
 }
 
 export interface SdrDeviceInfo {
