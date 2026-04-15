@@ -75,6 +75,7 @@ declare module '/hackrf-web/pkg/hackrf_web.js' {
 		set_shift(sampleRate: number, freq: number): void;
 		set_bandwidth(bw: number): void;
 		set_squelch(level: number, enabled: boolean): void;
+		get_squelch_db(): number;
 		set_wfm_mode(enabled: boolean): void;
 		set_if_sample_rate(rate: number): void;
 		set_audio_filters(lowPass: boolean, highPass: boolean): void;

@@ -44,6 +44,8 @@ export function createAppData() {
 		vfoSquelchOpen: [] as boolean[],
 		vfoSquelchHangUntil: [] as number[],
 		vfoActivityStats: [] as Array<{ count: number; totalMs: number; squelchOpenSince: number | null }>,
+		autoSquelchSamples: [] as Array<number[]>,
+		autoSquelchActive: [] as boolean[],
 		activityNow: 0,
 		showActivity: false,
 		view: {

@@ -264,6 +264,7 @@
 								<input type="range" v-model.number="vfo.squelchLevel" min="-100" max="0" step="0.1" :disabled="!vfo.squelchEnabled">
 								<span class="val">{{ vfo.squelchLevel.toFixed(3) }}dB</span>
 							</div>
+							<button class="btn-auto-squelch" @click="autoSquelch(i)" :disabled="!running || autoSquelchActive[i]" title="Sample noise floor and set squelch level automatically">Auto</button>
 						</div>
 
 						<div class="form-row full-checkbox-row" v-if="vfo.mode === 'nfm' || vfo.mode === 'wfm'">

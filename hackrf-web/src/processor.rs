@@ -65,6 +65,7 @@ pub struct DspProcessor {
     // Squelch state
     squelch_level: f32,   // dB threshold (-100 = disabled)
     squelch_enabled: bool,
+    last_squelch_db: f32, // last measured signal level in dB
 
     // DC Blocker state (matches SDR++ dc_block.h)
     dc_avg_i: f32,
@@ -169,6 +170,7 @@ impl DspProcessor {
             audio_resampler,
             squelch_level: -100.0,
             squelch_enabled: false,
+            last_squelch_db: -120.0,
             dc_avg_i: 0.0,
             dc_avg_q: 0.0,
             dc_alpha,
@@ -266,6 +268,11 @@ impl DspProcessor {
     pub fn set_squelch(&mut self, level: f32, enabled: bool) {
         self.squelch_level = level;
         self.squelch_enabled = enabled;
+    }
+
+    /// Returns the last measured signal level in dB (for auto-squelch calibration).
+    pub fn get_squelch_db(&self) -> f32 {
+        self.last_squelch_db
     }
 
     /// Enable or disable audio filters (LowPass, HighPass) for NFM.
@@ -460,21 +467,22 @@ impl DspProcessor {
         }
 
         // ── Stage 4: Squelch (SDR++ noise_reduction/squelch.h) ──────
-        if self.squelch_enabled {
-            let mut mag_sum = 0.0f32;
+        // Always measure signal level so auto-squelch can sample the noise floor
+        let mut mag_sum = 0.0f32;
+        for k in 0..if_count {
+            let i_val = self.scratch_i[k];
+            let q_val = self.scratch_q[k];
+            mag_sum += (i_val * i_val + q_val * q_val).sqrt();
+        }
+        let avg_mag = mag_sum / if_count as f32;
+        let db = 10.0 * (avg_mag + 1e-12).log10();
+        self.last_squelch_db = db;
+
+        if self.squelch_enabled && db < self.squelch_level {
+            // Mute: zero the IQ data (SDR++ memset to 0)
             for k in 0..if_count {
-                let i_val = self.scratch_i[k];
-                let q_val = self.scratch_q[k];
-                mag_sum += (i_val * i_val + q_val * q_val).sqrt();
-            }
-            let avg_mag = mag_sum / if_count as f32;
-            let db = 10.0 * (avg_mag + 1e-12).log10();
-            if db < self.squelch_level {
-                // Mute: zero the IQ data (SDR++ memset to 0)
-                for k in 0..if_count {
-                    self.scratch_i[k] = 0.0;
-                    self.scratch_q[k] = 0.0;
-                }
+                self.scratch_i[k] = 0.0;
+                self.scratch_q[k] = 0.0;
             }
         }
 

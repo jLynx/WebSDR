@@ -13,6 +13,10 @@ export class DspProcessor {
      */
     get_output_len(): number;
     /**
+     * Returns the last measured signal level in dB (for auto-squelch calibration).
+     */
+    get_squelch_db(): number;
+    /**
      * Create a new DSP processor matching SDR++ NFM pipeline.
      *
      * # Arguments
@@ -125,6 +129,7 @@ export interface InitOutput {
     readonly __wbg_fft_free: (a: number, b: number) => void;
     readonly alloc_iq_buffer: (a: number) => number;
     readonly dspprocessor_get_iq_output_len: (a: number) => number;
+    readonly dspprocessor_get_squelch_db: (a: number) => number;
     readonly dspprocessor_new: (a: number, b: number, c: number) => number;
     readonly dspprocessor_process: (a: number, b: number, c: number, d: number, e: number, f: any) => number;
     readonly dspprocessor_process_iq_only: (a: number, b: number, c: number, d: number, e: number, f: any) => number;

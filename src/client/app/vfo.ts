@@ -241,6 +241,40 @@ export const vfoMethods = {
 		d.show = false;
 	},
 
+	autoSquelch(this: AppInstance, index: number) {
+		if (!this.running || index < 0 || index >= this.vfos.length) return;
+
+		// Start collecting squelchDb samples
+		this.autoSquelchActive[index] = true;
+		this.autoSquelchSamples[index] = [];
+
+		this.showMsg('Sampling noise floor...');
+
+		// Collect for ~1.5 seconds (stats poll is 500ms, so we get ~3 samples)
+		setTimeout(() => {
+			this.autoSquelchActive[index] = false;
+			const samples = this.autoSquelchSamples[index];
+			if (!samples || samples.length === 0) {
+				this.showMsg('Auto squelch failed — no samples collected');
+				return;
+			}
+
+			// Use median for robustness against brief signal spikes
+			samples.sort((a: number, b: number) => a - b);
+			const median = samples[Math.floor(samples.length / 2)];
+
+			// Set squelch level 6 dB above noise floor
+			const level = Math.min(0, Math.max(-100, median + 6));
+
+			const vfo = this.vfos[index];
+			vfo.squelchLevel = Math.round(level * 10) / 10; // round to 0.1 dB
+			vfo.squelchEnabled = true;
+			this.updateBackendVfoParams(index);
+
+			this.showMsg(`Squelch set to ${vfo.squelchLevel.toFixed(1)} dB (noise floor: ${median.toFixed(1)} dB)`);
+		}, 1500);
+	},
+
 	async removeVfo(this: AppInstance, index: number) {
 		if (this.vfos.length <= 1) return;
 		this.vfos.splice(index, 1);

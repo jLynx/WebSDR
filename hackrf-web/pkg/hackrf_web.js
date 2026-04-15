@@ -28,6 +28,14 @@ export class DspProcessor {
         return ret >>> 0;
     }
     /**
+     * Returns the last measured signal level in dB (for auto-squelch calibration).
+     * @returns {number}
+     */
+    get_squelch_db() {
+        const ret = wasm.dspprocessor_get_squelch_db(this.__wbg_ptr);
+        return ret;
+    }
+    /**
      * Create a new DSP processor matching SDR++ NFM pipeline.
      *
      * # Arguments

@@ -5,6 +5,7 @@ export const __wbg_dspprocessor_free: (a: number, b: number) => void;
 export const __wbg_fft_free: (a: number, b: number) => void;
 export const alloc_iq_buffer: (a: number) => number;
 export const dspprocessor_get_iq_output_len: (a: number) => number;
+export const dspprocessor_get_squelch_db: (a: number) => number;
 export const dspprocessor_new: (a: number, b: number, c: number) => number;
 export const dspprocessor_process: (a: number, b: number, c: number, d: number, e: number, f: any) => number;
 export const dspprocessor_process_iq_only: (a: number, b: number, c: number, d: number, e: number, f: any) => number;

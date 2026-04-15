@@ -34,6 +34,7 @@ export interface VfoParams {
 
 export interface VfoState {
 	squelchOpen: boolean;
+	squelchDb: number;
 	pocsagDecoder: any;
 	audioQueue: Float32Array;
 	audioQueueLen: number;

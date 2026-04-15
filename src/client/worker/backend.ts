@@ -177,6 +177,7 @@ export class Backend {
 		return {
 			...this._perf.report,
 			squelchOpen: combinedSquelch,
+			squelchDb: this.vfoStates ? this.vfoStates.map(s => s.squelchDb ?? -120) : [],
 		};
 	}
 

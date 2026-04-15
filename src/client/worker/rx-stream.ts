@@ -107,6 +107,7 @@ export async function startRxStream(
 
 		const makeVfoState = (): VfoState => ({
 			squelchOpen: false,
+			squelchDb: -120,
 			pocsagDecoder: null,
 			audioQueue: new Float32Array(32768),
 			audioQueueLen: 0,
@@ -312,6 +313,9 @@ export async function startRxStream(
 				if (numAudioSamples === 0) { perf.droppedChunks++; vfoState.squelchOpen = false; return null; }
 				perf.audioSamplesOut += numAudioSamples;
 
+				// Read signal level from Rust (for auto-squelch calibration)
+				vfoState.squelchDb = ddc.get_squelch_db();
+
 				// Create float32 view of the returned pointer
 				const result = new Float32Array(backend.wasm.memory.buffer, outPtr, numAudioSamples);
 
@@ -384,6 +388,7 @@ export async function startRxStream(
 				}
 				squelchMag /= numDemodSamples;
 				const squelchDb = 10 * Math.log10(squelchMag + 1e-12);
+				vfoState.squelchDb = squelchDb;
 
 				// Grow the shared scratch buffer if this block is larger than expected
 				if (numDemodSamples > vfoState.scratchBuf!.length) {
@@ -510,6 +515,7 @@ export async function startRxStream(
 			}
 
 			state.squelchOpen = msg.squelchOpen;
+			state.squelchDb = msg.squelchDb ?? -120;
 			if (!backend._latchedSquelchOpen) backend._latchedSquelchOpen = [];
 			if (msg.squelchOpen) backend._latchedSquelchOpen[v] = true;
 			if (msg.dspTime) {
