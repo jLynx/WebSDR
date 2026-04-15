@@ -79,6 +79,15 @@ export const DEVICE_CATALOG: DeviceCatalogEntry[] = [
 		name: 'Airspy HF+',
 		filters: [{ vendorId: 0x03eb, productId: 0x800c }],
 	},
+	{
+		type: 'limesdr',
+		name: 'LimeSDR',
+		filters: [
+			{ vendorId: 0x04B4, productId: 0x00F1 },
+			{ vendorId: 0x04B4, productId: 0x00F3 },
+			{ vendorId: 0x1D50, productId: 0x6108 },
+		],
+	},
 ];
 
 /** Get all USB filters for the browser device picker. */

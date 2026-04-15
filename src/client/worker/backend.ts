@@ -27,6 +27,7 @@ import '../devices/hackrf';
 import '../devices/rtlsdr';
 import '../devices/airspy';
 import '../devices/airspyhf';
+import '../devices/limesdr';
 import {
 	setRemoteHostCallback,
 	setRemoteHostFftCallback,

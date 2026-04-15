@@ -14,6 +14,35 @@ interface USBDeviceRequestOptions {
 	filters: USBDeviceFilter[];
 }
 
+interface USBConfiguration {
+	configurationValue: number;
+	configurationName: string | null;
+	interfaces: USBInterface[];
+}
+
+interface USBInterface {
+	interfaceNumber: number;
+	alternate: USBAlternateInterface;
+	alternates: USBAlternateInterface[];
+	claimed: boolean;
+}
+
+interface USBAlternateInterface {
+	alternateSetting: number;
+	interfaceClass: number;
+	interfaceSubclass: number;
+	interfaceProtocol: number;
+	interfaceName: string | null;
+	endpoints: USBEndpoint[];
+}
+
+interface USBEndpoint {
+	endpointNumber: number;
+	direction: 'in' | 'out';
+	type: 'bulk' | 'interrupt' | 'isochronous';
+	packetSize: number;
+}
+
 interface USBDevice {
 	open(): Promise<void>;
 	close(): Promise<void>;
@@ -22,6 +51,8 @@ interface USBDevice {
 	controlTransferIn(setup: USBControlTransferParameters, length: number): Promise<USBInTransferResult>;
 	controlTransferOut(setup: USBControlTransferParameters, data?: BufferSource): Promise<USBOutTransferResult>;
 	transferIn(endpointNumber: number, length: number): Promise<USBInTransferResult>;
+	transferOut(endpointNumber: number, data: BufferSource): Promise<USBOutTransferResult>;
+	configuration: USBConfiguration | null;
 	vendorId: number;
 	productId: number;
 	productName: string;

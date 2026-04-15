@@ -181,7 +181,13 @@
 						<!-- Dynamic gain controls based on connected device -->
 						<template v-if="deviceCapabilities">
 							<div class="form-row" v-for="gc in deviceCapabilities.gainControls" :key="gc.name">
-								<template v-if="gc.type === 'slider'">
+								<template v-if="gc.type === 'select'">
+									<label>{{ gc.name }}</label>
+									<select v-model.number="gains[gc.name]" :disabled="remoteMode === 'client' && locks[gc.name]" style="flex:1; background:#1a1a2e; color:#e0e0e0; border:1px solid #333; border-radius:4px; padding:4px 8px;">
+										<option v-for="(lbl, idx) in gc.labels" :key="idx" :value="idx">{{ lbl }}</option>
+									</select>
+								</template>
+								<template v-else-if="gc.type === 'slider'">
 									<label>{{ gc.name }} Gain</label>
 									<div class="slider-group">
 										<input type="range" v-model.number="gains[gc.name]" :min="gc.min" :max="gc.max" :step="gc.step" :disabled="remoteMode === 'client' && locks[gc.name]">
