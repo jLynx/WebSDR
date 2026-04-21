@@ -22,6 +22,7 @@ interface USBDevice {
 	controlTransferIn(setup: USBControlTransferParameters, length: number): Promise<USBInTransferResult>;
 	controlTransferOut(setup: USBControlTransferParameters, data?: BufferSource): Promise<USBOutTransferResult>;
 	transferIn(endpointNumber: number, length: number): Promise<USBInTransferResult>;
+	clearHalt(direction: 'in' | 'out', endpointNumber: number): Promise<void>;
 	vendorId: number;
 	productId: number;
 	productName: string;
@@ -46,6 +47,7 @@ interface USBInTransferResult {
 
 interface USBOutTransferResult {
 	status: 'ok' | 'stall';
+	bytesWritten: number;
 }
 
 interface USB {
