@@ -154,12 +154,14 @@ export class AirspyDevice implements SdrDevice {
 				const ratesBytes = new Uint8Array(ratesBuf);
 				console.log(`${LOG}       got ${ratesBytes.length} bytes: [${hex(ratesBytes)}]`);
 				const ratesView = new DataView(ratesBuf);
+				// IMPORTANT: do NOT sort. The firmware's SET_SAMPLERATE expects the
+				// index INTO ITS OWN array — sorting reorders our indices and we end
+				// up sending the wrong rate to the device.
 				this.sampleRates = [];
 				for (let i = 0; i < count; i++) {
 					this.sampleRates.push(ratesView.getUint32(i * 4, true));
 				}
-				this.sampleRates.sort((a, b) => a - b);
-				console.log(`${LOG}     supported sample rates: [${this.sampleRates.map(r => (r / 1e6).toFixed(2) + 'M').join(', ')}]`);
+				console.log(`${LOG}     supported sample rates (firmware order): [${this.sampleRates.map(r => (r / 1e6).toFixed(2) + 'M').join(', ')}]`);
 				console.log(`${LOG}     raw values: [${this.sampleRates.join(', ')}]`);
 			} else {
 				console.warn(`${LOG}     count out of range (0..100), keeping defaults: [${this.sampleRates.join(', ')}]`);
@@ -381,6 +383,22 @@ export class AirspyDevice implements SdrDevice {
 						firstTransferLogged = true;
 						const sampleView = new Int16Array(raw.buffer, raw.byteOffset, Math.min(8, raw.byteLength / 2));
 						console.log(`${LOG}   [transfer ${transferId}] FIRST DATA: ${raw.byteLength} bytes, first int16 samples: [${Array.from(sampleView).join(', ')}]`);
+
+						// Scan the full packet for min/max/abs-mean so we can verify
+						// the sample format (12-bit ±2047 vs full int16 ±32767) and
+						// detect clipping. Run on first packet of each worker only.
+						const fullView = new Int16Array(raw.buffer, raw.byteOffset, raw.byteLength / 2);
+						let mn = 32767, mx = -32768, absSum = 0, clippedNeg = 0, clippedPos = 0;
+						for (let i = 0; i < fullView.length; i++) {
+							const v = fullView[i];
+							if (v < mn) mn = v;
+							if (v > mx) mx = v;
+							absSum += v < 0 ? -v : v;
+							if (v <= -32700) clippedNeg++;
+							if (v >= 32700) clippedPos++;
+						}
+						const absMean = absSum / fullView.length;
+						console.log(`${LOG}   [transfer ${transferId}] sample stats: min=${mn} max=${mx} abs-mean=${absMean.toFixed(0)} near-clip neg=${clippedNeg} pos=${clippedPos} (of ${fullView.length} samples)`);
 					}
 
 					// Periodic stats log (once per ~2 seconds, from any worker)
@@ -393,15 +411,17 @@ export class AirspyDevice implements SdrDevice {
 						console.log(`${LOG}   RX stats: ${this.rxTransferCount} transfers, ${(this.rxByteCount / 1024 / 1024).toFixed(2)} MiB in ${elapsed.toFixed(1)}s (${mbps} MiB/s, avg ${avgSize} B/transfer)`);
 					}
 
-					// Airspy delivers unpacked 12-bit samples in signed 16-bit LE words.
-					// NOTE: these are REAL samples at 2x the IQ rate — libairspy's host-side
-					// Hilbert filter converts them to IQ. This driver currently passes the
-					// raw real samples through; downstream DSP will see a real signal until
-					// the IQ conversion is added. Scale 12-bit -> int8 for the DSP pipeline.
+					// Airspy firmware delivers REAL samples (not IQ) at 2x the IQ rate
+					// in signed 16-bit LE words using the FULL int16 range (~±32700).
+					// libairspy's host-side Hilbert filter converts to IQ; this driver
+					// currently passes raw real samples through, so downstream DSP sees
+					// a real-valued signal (this is a known follow-up).
+					// Scale int16 -> int8 by shifting right 8 (NOT 4 — that overflows
+					// when values exceed ±2047 because Int8Array truncates mod 256).
 					const int16View = new Int16Array(raw.buffer, raw.byteOffset, raw.byteLength / 2);
 					const int8Data = new Int8Array(int16View.length);
 					for (let i = 0; i < int16View.length; i++) {
-						int8Data[i] = int16View[i] >> 4;
+						int8Data[i] = int16View[i] >> 8;
 					}
 					callback(new Uint8Array(int8Data.buffer));
 				} catch (e: unknown) {
