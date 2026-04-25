@@ -275,8 +275,20 @@ export class AirspyDevice implements SdrDevice {
 
 	async setFrequency(freqHz: number): Promise<void> {
 		console.log(`${LOG} setFrequency(${freqHz} Hz = ${(freqHz / 1e6).toFixed(6)} MHz) called`);
+		// Airspy R820T tuner range is roughly 24 MHz .. 1.8 GHz. Anything outside
+		// hints at a caller-side units bug (e.g. MHz × 1e6 applied twice).
+		if (freqHz < 24_000_000 || freqHz > 1_800_000_000) {
+			console.warn(`${LOG}   WARNING: freqHz=${freqHz} is outside the Airspy tuning range (24 MHz .. 1.8 GHz). The wValue will be truncated to uint32 and the device will tune somewhere unexpected.`);
+		}
+		// SET_FREQ wants a uint32 little-endian Hz. Mask to 32 bits explicitly
+		// so the truncation is visible in the hex dump rather than silently
+		// happening inside setUint32.
+		const truncated = freqHz >>> 0;
+		if (truncated !== freqHz) {
+			console.warn(`${LOG}   freqHz=${freqHz} truncated to 32-bit: ${truncated} (= ${(truncated / 1e6).toFixed(3)} MHz)`);
+		}
 		const data = new ArrayBuffer(4);
-		new DataView(data).setUint32(0, freqHz, true);
+		new DataView(data).setUint32(0, truncated, true);
 		console.log(`${LOG}   sending SET_FREQ (vendor OUT, value=0, index=0, data=[${hex(data)}])`);
 		try {
 			await this.vendorOut(AIRSPY_SET_FREQ, 0, 0, data);
@@ -411,17 +423,17 @@ export class AirspyDevice implements SdrDevice {
 						console.log(`${LOG}   RX stats: ${this.rxTransferCount} transfers, ${(this.rxByteCount / 1024 / 1024).toFixed(2)} MiB in ${elapsed.toFixed(1)}s (${mbps} MiB/s, avg ${avgSize} B/transfer)`);
 					}
 
-					// Airspy firmware delivers REAL samples (not IQ) at 2x the IQ rate
-					// in signed 16-bit LE words using the FULL int16 range (~±32700).
-					// libairspy's host-side Hilbert filter converts to IQ; this driver
-					// currently passes raw real samples through, so downstream DSP sees
-					// a real-valued signal (this is a known follow-up).
-					// Scale int16 -> int8 by shifting right 8 (NOT 4 — that overflows
-					// when values exceed ±2047 because Int8Array truncates mod 256).
+					// Airspy firmware delivers 12-bit UNSIGNED ADC samples in 16-bit LE
+					// words, centered around 2048 (the ADC midpoint). These are REAL
+					// samples (not IQ) at 2× the IQ rate — libairspy's host-side
+					// Hilbert filter would convert to IQ, but this driver passes the
+					// raw real samples through (known follow-up).
+					// Conversion: subtract DC midpoint to get signed 12-bit (-2048..2047),
+					// then >> 4 to scale to int8 (-128..127).
 					const int16View = new Int16Array(raw.buffer, raw.byteOffset, raw.byteLength / 2);
 					const int8Data = new Int8Array(int16View.length);
 					for (let i = 0; i < int16View.length; i++) {
-						int8Data[i] = int16View[i] >> 8;
+						int8Data[i] = (int16View[i] - 2048) >> 4;
 					}
 					callback(new Uint8Array(int8Data.buffer));
 				} catch (e: unknown) {
